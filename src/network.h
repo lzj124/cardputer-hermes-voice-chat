@@ -17,11 +17,15 @@ public:
     int    proxyPort = atoi(PROXY_PORT);
     Transport transport = Transport::WIFI;
 
+    // Status callback — set by main.cpp to display progress on screen
+    void (*onStatus)(const char*) = nullptr;
+
     // ── USB Serial Protocol ───────────────────────────────
     // ESP32 ↔ Mac bridge (usb_bridge.py):
     //   ESP32→Mac: "HELLO\n"              handshake
     //   Mac→ESP32: "OK\n"                 handshake ack
     //   ESP32→Mac: "SEND <len>\n" <bytes> send PCM recording
+    //   Mac→ESP32: "STATUS <text>\n"       progress update
     //   Mac→ESP32: "RECV <len>\n" <bytes> receive TTS PCM
     //   Mac→ESP32: "ERR\n"                pipeline failed
 
@@ -178,83 +182,90 @@ public:
         }
 
         if (contentLength <= 0) {
-            Serial.println("[NET] No valid Content-Length");
-            client.stop(); return 0;
+            // No Content-Length — streaming chunked response (proxy v2)
+            contentLength = 0;  // signal streaming mode
         }
 
-        // ── Read body ─────────────────────────────────────
-        size_t totalRead = 0;
+        // ── Read body (streaming: STATUS:/RECV:/PCM) ────
+        bool inPCM = false;
+        size_t pcmLen = 0;
+        size_t pcmRead = 0;
+        bool sdOpen = false;
+        File ttsFile;
         uint8_t chunk[1024];
 
         if (useSD) {
-            // Stream TTS response to SD file
             SD.remove(SD_TTS_FILE);
-            File ttsFile = SD.open(SD_TTS_FILE, FILE_WRITE);
+            ttsFile = SD.open(SD_TTS_FILE, FILE_WRITE);
             if (!ttsFile) {
-                Serial.println("[NET] Can't open SD TTS file for writing");
+                Serial.println("[NET] Can't open SD TTS file");
                 client.stop(); return 0;
             }
-
-            while (totalRead < (size_t)contentLength) {
-                if (client.available()) {
-                    int n = client.read(chunk, min(sizeof(chunk), (size_t)contentLength - totalRead));
-                    if (n > 0) {
-                        ttsFile.write(chunk, n);
-                        totalRead += n;
-                    } else break;
-                } else {
-                    if (!client.connected()) {
-                        delay(100);
-                        if (!client.available()) break;
-                        continue;
-                    }
-                    if (millis() - t0 > HTTP_TIMEOUT) {
-                        Serial.printf("[NET] SD body timeout at %zu/%d\n", totalRead, contentLength);
-                        break;
-                    }
-                    if (tick) tick(); else yield();
-                }
-            }
-            ttsFile.close();
-            client.stop();
-
-            size_t outSamples = totalRead / sizeof(int16_t);
-            Serial.printf("[NET] TTS → SD: %zu bytes (%.1fs @ %dHz)\n",
-                          totalRead, (float)outSamples / PLAY_SAMPLE_RATE, PLAY_SAMPLE_RATE);
-            return outSamples;
-        } else {
-            // RAM mode: read to buffer
-            size_t outBytes = outMaxSamples * sizeof(int16_t);
-            size_t targetRead = min((size_t)contentLength, outBytes);
-            uint8_t* outPtr = (uint8_t*)outBuffer;
-
-            while (totalRead < targetRead) {
-                if (client.available()) {
-                    int n = client.read(chunk, min(sizeof(chunk), targetRead - totalRead));
-                    if (n > 0) {
-                        memcpy(outPtr + totalRead, chunk, n);
-                        totalRead += n;
-                    } else break;
-                } else {
-                    if (!client.connected()) {
-                        delay(100);
-                        if (!client.available()) break;
-                        continue;
-                    }
-                    if (millis() - t0 > HTTP_TIMEOUT) {
-                        Serial.printf("[NET] Body timeout at %zu/%d\n", totalRead, contentLength);
-                        break;
-                    }
-                    if (tick) tick(); else yield();
-                }
-            }
-
-            client.stop();
-            size_t outSamples = totalRead / sizeof(int16_t);
-            Serial.printf("[NET] Got %zu bytes PCM (%.1fs @ %dHz)\n",
-                          totalRead, (float)outSamples / PLAY_SAMPLE_RATE, PLAY_SAMPLE_RATE);
-            return outSamples;
+            sdOpen = true;
         }
+
+        uint8_t* outPtr = nullptr;
+        size_t outBytes = 0;
+        if (!useSD) {
+            outBytes = outMaxSamples * sizeof(int16_t);
+            outPtr = (uint8_t*)outBuffer;
+        }
+
+        t0 = millis();  // reset timeout for body
+        while ((!inPCM && client.connected()) || (inPCM && pcmRead < pcmLen)) {
+            while (!client.available() && client.connected()) {
+                if (millis() - t0 > HTTP_TIMEOUT) break;
+                if (tick) tick(); else yield();
+            }
+            if (!client.available()) {
+                if (!client.connected()) break;
+                continue;
+            }
+
+            if (!inPCM) {
+                size_t len = client.readBytesUntil('\n', lineBuf, sizeof(lineBuf) - 1);
+                if (len == 0) continue;
+                lineBuf[len] = '\0';
+                if (len > 0 && lineBuf[len-1] == '\r') { lineBuf[len-1] = '\0'; len--; }
+                if (len == 0) continue;
+
+                if (strncmp(lineBuf, "STATUS:", 7) == 0) {
+                    if (onStatus) onStatus(lineBuf + 7);
+                    continue;
+                }
+                if (strncmp(lineBuf, "RECV:", 5) == 0) {
+                    pcmLen = atol(lineBuf + 5);
+                    if (pcmLen == 0) {
+                        if (sdOpen) ttsFile.close();
+                        client.stop(); return 0;
+                    }
+                    inPCM = true;
+                    continue;
+                }
+            } else {
+                size_t want = pcmLen - pcmRead;
+                size_t chunkSize = min((size_t)sizeof(chunk), want);
+                int n = client.read(chunk, chunkSize);
+                if (n > 0) {
+                    if (sdOpen) {
+                        ttsFile.write(chunk, n);
+                    } else {
+                        size_t copyLen = min((size_t)n, outBytes - pcmRead);
+                        if (copyLen > 0) memcpy(outPtr + pcmRead, chunk, copyLen);
+                    }
+                    pcmRead += n;
+                } else if (n < 0) break;
+            }
+        }
+
+        if (sdOpen) ttsFile.close();
+        client.stop();
+
+        size_t outSamples = pcmRead / sizeof(int16_t);
+        Serial.printf("[NET] TTS: %zu bytes (%.1fs @ %dHz) [%s]\n",
+                      pcmRead, (float)outSamples / PLAY_SAMPLE_RATE, PLAY_SAMPLE_RATE,
+                      useSD ? "SD" : "DRAM");
+        return outSamples;
     }
 
     // ── USB Voice Pipeline ────────────────────────────────
@@ -319,6 +330,12 @@ public:
                     if (strcmp(lineBuf, "ERR") == 0) {
                         Serial.println("[USB] Bridge returned ERR");
                         return 0;
+                    }
+
+                    // STATUS <text> — show progress on screen
+                    if (strncmp(lineBuf, "STATUS ", 7) == 0) {
+                        if (onStatus) onStatus(lineBuf + 7);
+                        continue;
                     }
 
                     // RECV <len> response

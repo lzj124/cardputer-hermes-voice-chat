@@ -13,6 +13,10 @@
 Audio   audio;
 Network network;
 
+// Status callback — bridges network.h → audio.h
+void onNetworkStatus(const char* text) {
+    audio.showStatus(text);
+}
 State   currentState   = State::SLEEP;
 unsigned long stateEnterTime = 0;
 unsigned long lastActivity   = 0;
@@ -244,6 +248,7 @@ void setup() {
 
     // ── Start both transports ────────────────────────────
     network.transport = Transport::WIFI;
+    network.onStatus = onNetworkStatus;  // wire up status display
     WiFi.mode(WIFI_STA);  // Explicit station mode
     WiFi.setAutoReconnect(true);
     Serial.printf("[WIFI] Connecting to %s (background)\n", WIFI_SSID);

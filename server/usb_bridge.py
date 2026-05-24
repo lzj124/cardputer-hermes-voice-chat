@@ -133,22 +133,46 @@ def _process_send(ser, pcm_len):
             stream=True
         )
         if resp.status_code == 200:
-            pcm_data = resp.content
-            if pcm_data:
-                ser.write(f"RECV {len(pcm_data)}\n".encode())
-                ser.flush()
-                time.sleep(0.1)
-                sent = 0
-                while sent < len(pcm_data):
-                    c = pcm_data[sent:sent+128]
-                    ser.write(c)
-                    ser.flush()
-                    sent += len(c)
-                    time.sleep(0.001)
-                print(f"[BRIDGE] TTS relay complete ({len(pcm_data)} bytes)")
-            else:
-                ser.write(b"RECV 0\n")
-                ser.flush()
+            # Parse streaming response: STATUS lines → RECV:N → PCM
+            buf_line = b""
+            in_pcm = False
+            pcm_remaining = 0
+            for chunk in resp.iter_content(chunk_size=1):
+                if not chunk:
+                    continue
+                if in_pcm:
+                    pcm_remaining -= 1
+                    ser.write(chunk)
+                    if pcm_remaining % 128 == 0:
+                        ser.flush()
+                        time.sleep(0.001)
+                    if pcm_remaining == 0:
+                        ser.flush()
+                        break
+                else:
+                    if chunk == b"\n":
+                        line = buf_line.decode("utf-8", errors="replace")
+                        buf_line = b""
+                        if line.startswith("STATUS:"):
+                            status_text = line[7:]
+                            ser.write(f"STATUS {status_text}\n".encode())
+                            ser.flush()
+                            print(f"[BRIDGE] {line}")
+                        elif line.startswith("RECV:"):
+                            pcm_remaining = int(line[5:])
+                            if pcm_remaining == 0:
+                                ser.write(b"RECV 0\n")
+                                ser.flush()
+                                break
+                            ser.write(f"RECV {pcm_remaining}\n".encode())
+                            ser.flush()
+                            time.sleep(0.05)
+                            in_pcm = True
+                    else:
+                        buf_line += chunk
+
+            if not in_pcm and pcm_remaining == 0:
+                print("[BRIDGE] Proxy returned no audio")
         else:
             print(f"[BRIDGE] Proxy error: {resp.status_code} {resp.text[:200]}")
             ser.write(b"ERR\n")

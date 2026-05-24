@@ -309,26 +309,94 @@ def openclaw_chat(text):
 
 # ── Pipeline ───────────────────────────────────────────────────
 
-def pipeline_voice(audio_bytes):
-    """Voice pipeline: audio → ASR → Chat → TTS → PCM. Returns raw PCM bytes or None."""
+def pipeline_voice_stream(audio_bytes):
+    """Streaming voice pipeline: yields STATUS lines during Chat, then RECV header + PCM."""
+    # Step 1: ASR
+    yield "STATUS:Listening...\n"
     text = asr_recognize(audio_bytes)
     if not text:
-        return None
-    response = openclaw_chat(text)
-    if not response:
-        return None
-    return tts_synthesize(response)
+        yield "STATUS:No speech detected\n"
+        yield "RECV:0\n"
+        return
+
+    preview = text[:18] + (".." if len(text) > 18 else "")
+    yield f"STATUS:Heard: {preview}\n"
+
+    # Step 2: Chat via OpenClaw Gateway (streaming → capture tool calls)
+    yield "STATUS:Thinking...\n"
+
+    if not OPENCLAW_TOKEN:
+        response = f"[echo] {text}"
+    else:
+        url = f"http://{OPENCLAW_HOST}:{OPENCLAW_PORT}/v1/chat/completions"
+        payload = {
+            "model": "openclaw",
+            "user": "clawvoice",
+            "stream": True,
+            "messages": [
+                {"role": "system", "content":
+                    "You are a voice assistant. Reply in plain text, no markdown. Be concise."},
+                {"role": "user", "content": text},
+            ],
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {OPENCLAW_TOKEN}",
+        }
+
+        full_text = ""
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=120, stream=True)
+            if resp.status_code != 200:
+                log.error(f"OpenClaw HTTP {resp.status_code}: {resp.text[:200]}")
+                response = "Sorry, I can't answer right now."
+            else:
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    line = line.decode("utf-8", errors="ignore")
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:]
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        j = json.loads(data)
+                        delta = j.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            if not full_text:
+                                yield "STATUS:Generating...\n"
+                            full_text += content
+                    except json.JSONDecodeError:
+                        pass
+
+                if full_text:
+                    response = full_text.strip()[:300]
+                else:
+                    response = "Sorry, I didn't understand."
+                log.info(f"OpenClaw response ({len(response)} chars): {response[:80]}...")
+        except Exception as e:
+            log.error(f"OpenClaw exception: {e}")
+            response = "Sorry, an error occurred."
+
+    # Step 3: TTS
+    yield "STATUS:Speaking...\n"
+    pcm = tts_synthesize(response)
+    if pcm:
+        yield f"RECV:{len(pcm)}\n"
+        yield pcm
+    else:
+        yield "RECV:0\n"
 
 
 def pipeline_text(text):
     """Text pipeline: text → Chat → TTS → PCM"""
     if not text.strip():
         return None
-
     response = openclaw_chat(text)
     if not response:
         response = "抱歉，处理失败了。"
-
     return tts_synthesize(response)
 
 
@@ -342,12 +410,14 @@ def handle_voice():
 
     log.info(f"/voice received {len(audio_data)} bytes")
 
-    pcm = pipeline_voice(audio_data)
+    def generate():
+        for chunk in pipeline_voice_stream(audio_data):
+            if isinstance(chunk, str):
+                yield chunk.encode("utf-8")
+            else:
+                yield chunk
 
-    if pcm:
-        return Response(pcm, mimetype="audio/pcm")
-    else:
-        return Response(b"", mimetype="audio/pcm")
+    return Response(generate(), mimetype="application/octet-stream")
 
 
 @app.route("/text", methods=["POST"])
