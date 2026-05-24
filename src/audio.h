@@ -223,6 +223,17 @@ public:
         M5Cardputer.Speaker.stop();
     }
 
+    // ── Status display (bottom of screen, 20-char limit) ────
+    char statusText[24] = "";
+
+    void showStatus(const char* text) {
+        if (strncmp(statusText, text, 20) == 0) return;
+        strncpy(statusText, text, 20);
+        statusText[20] = '\0';
+        // Short beep on change
+        M5Cardputer.Speaker.tone(880, 60);
+    }
+
     // ── Get recording data for network upload ─────────────
     // For SD mode: read file into DRAM buffer.
     // Returns nullptr if too large (caller should stream from SD).
@@ -318,6 +329,15 @@ public:
             dsp.setTextColor(labelColor);
             dsp.drawString(label, (w - labelW) / 2, h / 2 - 14);
             strcpy(lastLabel, label);
+        }
+
+        // Status text (bottom row) — always draw if non-empty
+        if (statusText[0] != '\0') {
+            dsp.setTextSize(1);
+            dsp.setTextColor(0x8410);  // grey
+            int sw = strlen(statusText) * 6;
+            dsp.fillRect(0, h - 12, w, 12, TFT_BLACK);
+            dsp.drawString(statusText, (w - sw) / 2, h - 11);
         }
     }
 };
