@@ -72,10 +72,10 @@ def open_serial(port):
 
 
 def do_handshake(ser):
-    """Wait for HELLO, respond OK. Returns True on success."""
+    """Wait for HELLO or SEND. If SEND, process it and enter relay. Returns True on success."""
     print("[BRIDGE] Waiting for ESP32 handshake...")
     buf = b""
-    deadline = time.time() + 30  # wait up to 30s for HELLO
+    deadline = time.time() + 30  # wait up to 30s
 
     while time.time() < deadline:
         try:
@@ -92,6 +92,11 @@ def do_handshake(ser):
                 ser.write(b"OK\n")
                 ser.flush()
                 return True
+            elif line.startswith("SEND "):
+                # ESP32 already in USB mode from previous session — process directly
+                print(f"[BRIDGE] Got SEND without handshake, processing...")
+                pcm_len = int(line[5:])
+                return _process_send(ser, pcm_len)
             else:
                 print(f"[ESP] {line}")
         elif b:
@@ -101,6 +106,61 @@ def do_handshake(ser):
 
     print("[BRIDGE] Handshake timeout")
     return False
+
+
+def _process_send(ser, pcm_len):
+    """Handle a SEND command: read PCM, forward to proxy, send back RECV+PCM.
+    Returns True to enter relay loop, False on error."""
+    print(f"[BRIDGE] Receiving {pcm_len} bytes PCM from ESP32...")
+
+    pcm_data = read_exact(ser, pcm_len)
+    if len(pcm_data) != pcm_len:
+        print(f"[BRIDGE] Short read: got {len(pcm_data)}/{pcm_len}")
+        try:
+            ser.write(b"ERR\n")
+            ser.flush()
+        except serial.SerialException:
+            return False
+        return True
+
+    print(f"[BRIDGE] Forwarding to proxy /voice...")
+    try:
+        resp = requests.post(
+            f"{PROXY_URL}/voice",
+            data=pcm_data,
+            headers={"Content-Type": "application/pcm"},
+            timeout=120,
+            stream=True
+        )
+        if resp.status_code == 200:
+            pcm_data = resp.content
+            if pcm_data:
+                ser.write(f"RECV {len(pcm_data)}\n".encode())
+                ser.flush()
+                time.sleep(0.1)
+                sent = 0
+                while sent < len(pcm_data):
+                    c = pcm_data[sent:sent+128]
+                    ser.write(c)
+                    ser.flush()
+                    sent += len(c)
+                    time.sleep(0.001)
+                print(f"[BRIDGE] TTS relay complete ({len(pcm_data)} bytes)")
+            else:
+                ser.write(b"RECV 0\n")
+                ser.flush()
+        else:
+            print(f"[BRIDGE] Proxy error: {resp.status_code} {resp.text[:200]}")
+            ser.write(b"ERR\n")
+            ser.flush()
+    except Exception as e:
+        print(f"[BRIDGE] Proxy request failed: {e}")
+        try:
+            ser.write(b"ERR\n")
+            ser.flush()
+        except serial.SerialException:
+            return False
+    return True
 
 
 def handle_relay(ser):
@@ -120,60 +180,14 @@ def handle_relay(ser):
             line = buf.decode("utf-8", errors="replace").rstrip("\r")
             buf = b""
 
-            if line.startswith("SEND "):
+            if line == "HELLO":
+                # Re-handshake — ESP32 might have reset
+                print("[BRIDGE] Got HELLO (re-handshake), sending OK")
+                ser.write(b"OK\n")
+                ser.flush()
+            elif line.startswith("SEND "):
                 pcm_len = int(line[5:])
-                print(f"[BRIDGE] Receiving {pcm_len} bytes PCM from ESP32...")
-
-                # Read PCM data
-                pcm_data = read_exact(ser, pcm_len)
-                if len(pcm_data) != pcm_len:
-                    print(f"[BRIDGE] Short read: got {len(pcm_data)}/{pcm_len}")
-                    try:
-                        ser.write(b"ERR\n")
-                        ser.flush()
-                    except serial.SerialException:
-                        return
-                    continue
-
-                print(f"[BRIDGE] Forwarding to proxy /voice...")
-                try:
-                    resp = requests.post(
-                        f"{PROXY_URL}/voice",
-                        data=pcm_data,
-                        headers={"Content-Type": "application/pcm"},
-                        timeout=120,
-                        stream=True
-                    )
-                    if resp.status_code == 200:
-                        # Read full response and forward as RECV + PCM
-                        pcm_data = resp.content
-                        if pcm_data:
-                            ser.write(f"RECV {len(pcm_data)}\n".encode())
-                            ser.flush()
-                            time.sleep(0.1)
-                            # Send in small chunks with pacing
-                            sent = 0
-                            while sent < len(pcm_data):
-                                c = pcm_data[sent:sent+128]
-                                ser.write(c)
-                                ser.flush()
-                                sent += len(c)
-                                time.sleep(0.001)
-                            print(f"[BRIDGE] TTS relay complete ({len(pcm_data)} bytes)")
-                        else:
-                            ser.write(b"RECV 0\n")
-                            ser.flush()
-                    else:
-                        print(f"[BRIDGE] Proxy error: {resp.status_code} {resp.text[:200]}")
-                        ser.write(b"ERR\n")
-                        ser.flush()
-                except Exception as e:
-                    print(f"[BRIDGE] Proxy request failed: {e}")
-                    try:
-                        ser.write(b"ERR\n")
-                        ser.flush()
-                    except serial.SerialException:
-                        return
+                _process_send(ser, pcm_len)
             else:
                 # Debug output from ESP32
                 print(f"[ESP] {line}")

@@ -46,7 +46,6 @@ unsigned long lastUsbPoll = 0;
 const unsigned long USB_POLL_INTERVAL = 3000;  // poll every 3s
 
 void maintainUsb() {
-    if (network.transport == Transport::USB) return;  // already on USB
     if (millis() - lastUsbPoll < USB_POLL_INTERVAL) return;
     lastUsbPoll = millis();
 
