@@ -291,6 +291,11 @@ public:
         if (stateChanged) {
             dsp.fillScreen(TFT_BLACK);
 
+            // Clear status text on transition to SLEEP
+            if (state == State::SLEEP) {
+                statusText[0] = '\0';
+            }
+
             // Top-left indicators
             dsp.setTextSize(1);
             int x = 2;
