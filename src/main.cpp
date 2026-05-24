@@ -228,6 +228,7 @@ void handleErrorWait() {
 // ── Setup ───────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
+    Serial.setRxBufferSize(4096);  // bigger USB RX buffer for TTS streaming
     delay(200);
     Serial.println("\n\n=== ClawVoice ===");
     Serial.flush();
@@ -247,6 +248,7 @@ void setup() {
     }
 
     // ── Start both transports ────────────────────────────
+    network.begin();          // init proxyHost/proxyPort (ESP32 global ctor workaround)
     network.transport = Transport::WIFI;
     network.onStatus = onNetworkStatus;  // wire up status display
     WiFi.mode(WIFI_STA);  // Explicit station mode

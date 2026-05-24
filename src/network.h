@@ -13,9 +13,15 @@
 
 class Network {
 public:
-    String proxyHost = PROXY_HOST;
-    int    proxyPort = atoi(PROXY_PORT);
-    Transport transport = Transport::WIFI;
+    const char* proxyHost;
+    int         proxyPort;
+    Transport   transport = Transport::WIFI;
+
+    // Must call begin() from setup() — ESP32 global ctor unreliable for member init
+    void begin() {
+        proxyHost = PROXY_HOST;
+        proxyPort = PROXY_PORT_NUM;
+    }
 
     // Status callback — set by main.cpp to display progress on screen
     void (*onStatus)(const char*) = nullptr;
@@ -88,11 +94,12 @@ public:
             pcmBytes = sdRecBytes;
         }
 
-        Serial.printf("[NET] POST /voice  %zu bytes PCM (%.1fs) [%s]\n",
+        Serial.printf("[NET] POST /voice  %zu bytes PCM (%.1fs) [%s] -> %s:%d\n",
                       pcmBytes, (float)(pcmBytes / sizeof(int16_t)) / MIC_SAMPLE_RATE,
-                      pcmData ? "DRAM" : "SD");
+                      pcmData ? "DRAM" : "SD",
+                      proxyHost, proxyPort);
 
-        if (!client.connect(proxyHost.c_str(), proxyPort)) {
+        if (!client.connect(proxyHost, proxyPort)) {
             Serial.println("[NET] Connection failed");
             return 0;
         }
@@ -103,7 +110,7 @@ public:
                       "Content-Length: %zu\r\n"
                       "Connection: close\r\n"
                       "\r\n",
-                      proxyHost.c_str(), proxyPort, pcmBytes);
+                      proxyHost, proxyPort, pcmBytes);
 
         // Send PCM body
         if (pcmData) {
@@ -354,8 +361,6 @@ public:
                                 Serial.println("[USB] Can't open SD TTS file");
                                 return 0;
                             }
-                            // Drain any leftover from header read
-                            delay(100);
                             Serial.setTimeout(5000);  // 5s per readBytes call
                             size_t totalRead = 0;
                             unsigned long lastData = millis();
@@ -434,7 +439,7 @@ public:
         int bodyLen = snprintf(json, sizeof(json), "{\"text\":\"%s\"}", escaped);
         Serial.printf("[NET] POST /text  (%d bytes): %.60s\n", bodyLen, text);
 
-        if (!client.connect(proxyHost.c_str(), proxyPort)) {
+        if (!client.connect(proxyHost, proxyPort)) {
             Serial.println("[NET] Connection failed");
             return 0;
         }
@@ -445,7 +450,7 @@ public:
                       "Content-Length: %d\r\n"
                       "Connection: close\r\n"
                       "\r\n",
-                      proxyHost.c_str(), proxyPort, bodyLen);
+                      proxyHost, proxyPort, bodyLen);
         client.write((const uint8_t*)json, bodyLen);
 
         unsigned long t0 = millis();

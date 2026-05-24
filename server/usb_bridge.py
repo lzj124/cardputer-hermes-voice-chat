@@ -64,6 +64,7 @@ def open_serial(port):
     """Open serial port, return serial object or None."""
     try:
         ser = serial.Serial(port, 115200, timeout=0.1)
+        ser.dtr = False  # prevent ESP32 reset on open
         time.sleep(0.5)
         return ser
     except Exception as e:

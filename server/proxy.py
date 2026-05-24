@@ -433,6 +433,43 @@ def hermes_chat_stream(text, status_callback=None):
         return ""
 
 
+# ── OpenClaw Gateway ──────────────────────────────────────────
+
+def openclaw_chat(text):
+    """Send text to OpenClaw gateway, return response text."""
+    if not text.strip():
+        return ""
+
+    url = f"http://{OPENCLAW_HOST}:{OPENCLAW_PORT}/v1/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {OPENCLAW_TOKEN}",
+    }
+
+    payload = {
+        "model": "openclaw",
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": text},
+        ],
+        "max_tokens": 300,
+    }
+
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=120)
+        if resp.status_code != 200:
+            log.error(f"OpenClaw HTTP {resp.status_code}: {resp.text[:200]}")
+            return ""
+        data = resp.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        result = content.strip()[:300]
+        log.info(f"OpenClaw response ({len(result)} chars): {result[:80]}...")
+        return result
+    except Exception as e:
+        log.error(f"OpenClaw exception: {e}")
+        return ""
+
+
 # ── Pipeline ───────────────────────────────────────────────────
 
 def pipeline_voice_stream(audio_bytes):
@@ -448,18 +485,21 @@ def pipeline_voice_stream(audio_bytes):
     preview = text[:18] + (".." if len(text) > 18 else "")
     yield f"STATUS:Heard: {preview}\n"
 
-    # Step 2: Chat via Hermes Gateway (with tool progress)
+    # Step 2: Chat via configured LLM backend
     yield "STATUS:Thinking...\n"
 
-    response = ""
-    gen = hermes_chat_stream(text)
-    try:
-        while True:
-            event = next(gen)
-            if isinstance(event, dict) and event.get("type") == "status":
-                yield f"STATUS:{event['text']}\n"
-    except StopIteration as e:
-        response = e.value or ""
+    if LLM_BACKEND == "openclaw":
+        response = openclaw_chat(text)
+    else:
+        response = ""
+        gen = hermes_chat_stream(text)
+        try:
+            while True:
+                event = next(gen)
+                if isinstance(event, dict) and event.get("type") == "status":
+                    yield f"STATUS:{event['text']}\n"
+        except StopIteration as e:
+            response = e.value or ""
 
     if not response:
         response = "抱歉，我没听懂。"
@@ -478,7 +518,10 @@ def pipeline_text(text):
     """Text pipeline: text → Chat → TTS → PCM"""
     if not text.strip():
         return None
-    response = hermes_chat(text)
+    if LLM_BACKEND == "openclaw":
+        response = openclaw_chat(text)
+    else:
+        response = hermes_chat(text)
     if not response:
         response = "抱歉，处理失败了。"
     return tts_synthesize(response)

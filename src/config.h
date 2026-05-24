@@ -19,6 +19,9 @@ enum class Transport { WIFI, USB };
 #ifndef PROXY_PORT
 #define PROXY_PORT "8900"
 #endif
+#ifndef PROXY_PORT_NUM
+#define PROXY_PORT_NUM 8900
+#endif
 
 // ── Audio ───────────────────────────────────────────────────
 // Cardputer mic records at 16kHz, 16-bit mono
