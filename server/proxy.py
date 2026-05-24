@@ -22,6 +22,9 @@ VOLCENGINE_APP_ID       = os.getenv("VOLC_APPID", "7443062928")
 VOLCENGINE_ACCESS_TOKEN = os.getenv("VOLC_TOKEN", "VOLC_TOKEN_REDACTED")
 VOLCENGINE_SECRET_KEY   = os.getenv("VOLC_SECRET", "VOLC_SECRET_REDACTED")
 
+# ── LLM Backend ──────────────────────────────────────────────
+LLM_BACKEND = os.getenv("LLM_BACKEND", "hermes")  # "hermes" or "openclaw"
+
 OPENCLAW_HOST  = os.getenv("OPENCLAW_HOST", "192.168.123.234")
 OPENCLAW_PORT  = os.getenv("OPENCLAW_PORT", "18789")
 OPENCLAW_TOKEN = os.getenv("OPENCLAW_TOKEN", "OPENCLAW_TOKEN_REDACTED")
@@ -246,64 +249,187 @@ def tts_synthesize(text):
         return None
 
 
-# ── OpenClaw Gateway ───────────────────────────────────────────
+# ── Hermes Gateway (API Server) ───────────────────────────────
 
-def openclaw_chat(text):
-    """Send text to OpenClaw gateway, return response text."""
-    if not OPENCLAW_TOKEN:
-        log.warning("OPENCLAW_TOKEN not set, returning echo")
-        return f"[echo] {text}"
+HERMES_HOST  = os.getenv("HERMES_HOST", "127.0.0.1")
+HERMES_PORT  = os.getenv("HERMES_PORT", "8642")
+HERMES_TOKEN = os.getenv("HERMES_TOKEN", "")  # optional auth
 
-    url = f"http://{OPENCLAW_HOST}:{OPENCLAW_PORT}/v1/chat/completions"
+SYSTEM_PROMPT = (
+    "你是一个语音助手，通过 ClawVoice 与用户对话。"
+    "用户通过语音听到你的回答，尽量简洁。"
+    "用纯文本回复，不要使用 emoji 或 markdown。"
+)
+
+
+def hermes_chat(text):
+    """Send text to Hermes /v1/runs, return response text (no tool progress)."""
+    if not text.strip():
+        return ""
+
+    url = f"http://{HERMES_HOST}:{HERMES_PORT}/v1/runs"
+    headers = {"Content-Type": "application/json"}
+    if HERMES_TOKEN:
+        headers["Authorization"] = f"Bearer {HERMES_TOKEN}"
+
     payload = {
-        "model": "openclaw",
-        "user": "clawvoice",
-        "stream": True,
-        "messages": [
-            {"role": "system", "content":
-                "你是一个语音助手，通过 ClawVoice 与用户对话。"
-                "用户通过语音听到你的回答，尽量简洁。"
-                "用纯文本回复，不要使用 emoji 或 markdown。"},
-            {"role": "user", "content": text},
-        ],
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {OPENCLAW_TOKEN}",
+        "input": text,
+        "instructions": SYSTEM_PROMPT,
     }
 
     try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=120, stream=True)
-        if resp.status_code != 200:
-            log.error(f"OpenClaw HTTP {resp.status_code}: {resp.text[:200]}")
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        if resp.status_code not in (200, 202):
+            log.error(f"Hermes POST /v1/runs HTTP {resp.status_code}: {resp.text[:200]}")
+            return ""
+
+        data = resp.json()
+        run_id = data.get("run_id") or data.get("id", "")
+        if not run_id:
+            log.error(f"Hermes: no run_id in response: {data}")
+            return ""
+
+        # Stream events via SSE
+        events_url = f"http://{HERMES_HOST}:{HERMES_PORT}/v1/runs/{run_id}/events"
+        ev_resp = requests.get(events_url, headers=headers, timeout=120, stream=True)
+        if ev_resp.status_code != 200:
+            log.error(f"Hermes GET events HTTP {ev_resp.status_code}")
             return ""
 
         full_text = ""
-        for line in resp.iter_lines():
+        for line in ev_resp.iter_lines():
             if not line:
                 continue
             line = line.decode("utf-8", errors="ignore")
             if not line.startswith("data: "):
                 continue
-            data = line[6:]
-            if data.strip() == "[DONE]":
-                break
+            payload_str = line[6:]
             try:
-                j = json.loads(data)
-                delta = j.get("choices", [{}])[0].get("delta", {})
-                content = delta.get("content", "")
-                if content:
-                    full_text += content
+                ev = json.loads(payload_str)
             except json.JSONDecodeError:
-                pass
+                continue
+
+            event_type = ev.get("event", "")
+            if event_type == "message.delta":
+                delta = ev.get("delta", "")
+                if delta:
+                    full_text += delta
+            elif event_type == "run.completed":
+                # Final output may be in "output" field
+                output = ev.get("output", "")
+                if output and not full_text:
+                    full_text = output
+                break
+            elif event_type == "run.failed":
+                log.error(f"Hermes run failed: {ev.get('error', 'unknown')}")
+                break
 
         result = full_text.strip()[:300]
-        log.info(f"OpenClaw response ({len(result)} chars): {result[:80]}...")
+        log.info(f"Hermes response ({len(result)} chars): {result[:80]}...")
         return result
 
     except Exception as e:
-        log.error(f"OpenClaw exception: {e}")
+        log.error(f"Hermes exception: {e}")
+        return ""
+
+
+def hermes_chat_stream(text, status_callback=None):
+    """
+    Send text to Hermes /v1/runs, yield status events during processing.
+    Returns (response_text, tool_events) when done.
+
+    Yields dicts:
+      {"type": "status", "text": "..."}  — show on ESP32 screen
+      {"type": "tool", "name": "...", "state": "started|completed"}
+    """
+    if not text.strip():
+        return ""
+
+    url = f"http://{HERMES_HOST}:{HERMES_PORT}/v1/runs"
+    headers = {"Content-Type": "application/json"}
+    if HERMES_TOKEN:
+        headers["Authorization"] = f"Bearer {HERMES_TOKEN}"
+
+    payload = {
+        "input": text,
+        "instructions": SYSTEM_PROMPT,
+    }
+
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        if resp.status_code not in (200, 202):
+            log.error(f"Hermes POST /v1/runs HTTP {resp.status_code}: {resp.text[:200]}")
+            return ""
+
+        data = resp.json()
+        run_id = data.get("run_id") or data.get("id", "")
+        if not run_id:
+            log.error(f"Hermes: no run_id in response: {data}")
+            return ""
+
+        events_url = f"http://{HERMES_HOST}:{HERMES_PORT}/v1/runs/{run_id}/events"
+        ev_resp = requests.get(events_url, headers=headers, timeout=120, stream=True)
+        if ev_resp.status_code != 200:
+            log.error(f"Hermes GET events HTTP {ev_resp.status_code}")
+            return ""
+
+        full_text = ""
+        for line in ev_resp.iter_lines():
+            if not line:
+                continue
+            line = line.decode("utf-8", errors="ignore")
+            if not line.startswith("data: "):
+                continue
+            payload_str = line[6:]
+            try:
+                ev = json.loads(payload_str)
+            except json.JSONDecodeError:
+                continue
+
+            event_type = ev.get("event", "")
+
+            if event_type == "tool.started":
+                tool_name = ev.get("tool", "unknown")
+                preview = ev.get("preview", "")
+                label = preview if preview else tool_name
+                # Truncate for ESP32 display (20 chars max)
+                if len(label) > 20:
+                    label = label[:18] + ".."
+                yield {"type": "status", "text": f"Tool: {label}"}
+
+            elif event_type == "tool.completed":
+                tool_name = ev.get("tool", "")
+                yield {"type": "status", "text": f"Done: {tool_name}"}
+
+            elif event_type == "reasoning.available":
+                thinking = ev.get("text", "")
+                if thinking:
+                    short = thinking[:18] + (".." if len(thinking) > 18 else "")
+                    yield {"type": "status", "text": short}
+
+            elif event_type == "message.delta":
+                delta = ev.get("delta", "")
+                if delta:
+                    if not full_text:
+                        yield {"type": "status", "text": "Generating..."}
+                    full_text += delta
+
+            elif event_type == "run.completed":
+                output = ev.get("output", "")
+                if output and not full_text:
+                    full_text = output
+                break
+
+            elif event_type == "run.failed":
+                log.error(f"Hermes run failed: {ev.get('error', 'unknown')}")
+                break
+
+        result = full_text.strip()[:300]
+        log.info(f"Hermes response ({len(result)} chars): {result[:80]}...")
+        return result
+
+    except Exception as e:
+        log.error(f"Hermes exception: {e}")
         return ""
 
 
@@ -322,63 +448,21 @@ def pipeline_voice_stream(audio_bytes):
     preview = text[:18] + (".." if len(text) > 18 else "")
     yield f"STATUS:Heard: {preview}\n"
 
-    # Step 2: Chat via OpenClaw Gateway (streaming → capture tool calls)
+    # Step 2: Chat via Hermes Gateway (with tool progress)
     yield "STATUS:Thinking...\n"
 
-    if not OPENCLAW_TOKEN:
-        response = f"[echo] {text}"
-    else:
-        url = f"http://{OPENCLAW_HOST}:{OPENCLAW_PORT}/v1/chat/completions"
-        payload = {
-            "model": "openclaw",
-            "user": "clawvoice",
-            "stream": True,
-            "messages": [
-                {"role": "system", "content":
-                    "You are a voice assistant. Reply in plain text, no markdown. Be concise."},
-                {"role": "user", "content": text},
-            ],
-        }
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {OPENCLAW_TOKEN}",
-        }
+    response = ""
+    gen = hermes_chat_stream(text)
+    try:
+        while True:
+            event = next(gen)
+            if isinstance(event, dict) and event.get("type") == "status":
+                yield f"STATUS:{event['text']}\n"
+    except StopIteration as e:
+        response = e.value or ""
 
-        full_text = ""
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=120, stream=True)
-            if resp.status_code != 200:
-                log.error(f"OpenClaw HTTP {resp.status_code}: {resp.text[:200]}")
-                response = "Sorry, I can't answer right now."
-            else:
-                for line in resp.iter_lines():
-                    if not line:
-                        continue
-                    line = line.decode("utf-8", errors="ignore")
-                    if not line.startswith("data: "):
-                        continue
-                    data = line[6:]
-                    if data.strip() == "[DONE]":
-                        break
-                    try:
-                        j = json.loads(data)
-                        delta = j.get("choices", [{}])[0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            if not full_text:
-                                yield "STATUS:Generating...\n"
-                            full_text += content
-                    except json.JSONDecodeError:
-                        pass
-
-                if full_text:
-                    response = full_text.strip()[:300]
-                else:
-                    response = "Sorry, I didn't understand."
-                log.info(f"OpenClaw response ({len(response)} chars): {response[:80]}...")
-        except Exception as e:
-            log.error(f"OpenClaw exception: {e}")
-            response = "Sorry, an error occurred."
+    if not response:
+        response = "抱歉，我没听懂。"
 
     # Step 3: TTS
     yield "STATUS:Speaking...\n"
@@ -394,7 +478,7 @@ def pipeline_text(text):
     """Text pipeline: text → Chat → TTS → PCM"""
     if not text.strip():
         return None
-    response = openclaw_chat(text)
+    response = hermes_chat(text)
     if not response:
         response = "抱歉，处理失败了。"
     return tts_synthesize(response)
@@ -441,8 +525,9 @@ def handle_text():
 def health():
     return jsonify({
         "status": "ok",
+        "llm_backend": LLM_BACKEND,
         "volcengine_appid": VOLCENGINE_APP_ID,
-        "openclaw": f"{OPENCLAW_HOST}:{OPENCLAW_PORT}",
+        "hermes": f"{HERMES_HOST}:{HERMES_PORT}",
         "tts_voice": TTS_VOICE,
         "tts_resource_id": TTS_RESOURCE_ID,
         "asr_resource_id": ASR_RESOURCE_ID,
@@ -462,6 +547,8 @@ if __name__ == "__main__":
     log.info(f"  Volcengine APP ID: {VOLCENGINE_APP_ID}")
     log.info(f"  ASR: 大模型流式语音识别 V3, resource={ASR_RESOURCE_ID}")
     log.info(f"  TTS: 豆包语音合成 2.0, voice={TTS_VOICE}, resource={TTS_RESOURCE_ID}")
-    log.info(f"  OpenClaw: {OPENCLAW_HOST}:{OPENCLAW_PORT}")
+    log.info(f"  LLM: Hermes {HERMES_HOST}:{HERMES_PORT} (tool progress enabled)")
+    if LLM_BACKEND == "openclaw":
+        log.warning("  ⚠ LLM_BACKEND=openclaw (legacy, no tool progress)")
 
     app.run(host=args.host, port=args.port, debug=args.debug, use_reloader=False, threaded=True)

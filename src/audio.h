@@ -227,9 +227,25 @@ public:
     char statusText[24] = "";
 
     void showStatus(const char* text) {
-        if (strncmp(statusText, text, 20) == 0) return;
-        strncpy(statusText, text, 20);
-        statusText[20] = '\0';
+        // Calculate how many chars fit on screen (6px per char at textSize 1)
+        const int maxChars = DISPLAY_W / 6;  // 135/6 = 22
+        int textLen = strlen(text);
+
+        char newText[24];
+        if (textLen > maxChars) {
+            int keep = maxChars - 3;  // room for "..."
+            strncpy(newText, text, keep);
+            newText[keep] = '\0';
+            strcat(newText, "...");
+        } else {
+            strncpy(newText, text, sizeof(newText) - 1);
+            newText[sizeof(newText) - 1] = '\0';
+        }
+
+        // Skip if unchanged
+        if (strcmp(statusText, newText) == 0) return;
+        strcpy(statusText, newText);
+
         // Short beep on change
         M5Cardputer.Speaker.tone(880, 60);
     }
