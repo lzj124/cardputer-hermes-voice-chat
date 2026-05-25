@@ -302,7 +302,9 @@ void loop() {
             Serial.println("[MAIN] Tab pressed — entering WiFi setup");
             if (audio.sdAvailable) {
                 runSetupPage(wifiCfg);
-                // Re-enter SLEEP so UI redraws fresh
+                // Force full screen redraw on return
+                audio.lastDrawnState = State::AWAKE;
+                audio.statusText[0] = '\0';
                 enterState(State::SLEEP);
             } else {
                 M5Cardputer.Display.fillScreen(TFT_BLACK);

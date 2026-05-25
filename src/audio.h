@@ -285,7 +285,7 @@ public:
     unsigned long lastBeat = 0;
     char thinkLabelBuf[16];
 
-    State lastDrawnState = State::SLEEP;
+    State lastDrawnState = State::AWAKE;  // start as non-SLEEP to force first draw
 
     void drawState(State state) {
         auto& dsp = M5Cardputer.Display;
@@ -369,13 +369,12 @@ public:
             dsp.drawString(statusText, (w - sw) / 2, h - 11);
         }
 
-        // Tab hint on SLEEP — bottom left (avoid heartbeat dot at top-right)
+        // Tab + Fn hint on SLEEP — bottom left
         if (state == State::SLEEP) {
-            // Erase old area first
-            dsp.fillRect(0, h - 12, 9 * 6 + 4, 10, TFT_BLACK);
+            dsp.fillRect(0, h - 12, w, 10, TFT_BLACK);
             dsp.setTextSize(1);
             dsp.setTextColor(0x4208);  // dark grey
-            dsp.drawString("Tab:Setup", 2, h - 12);
+            dsp.drawString("Tab:Setup  Fn:Chat", 2, h - 12);
         }
     }
 };

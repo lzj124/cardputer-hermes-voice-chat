@@ -223,8 +223,8 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
 
     // Help text
     dsp.setTextColor(0x8410);
-    dsp.drawString("Fn+K:up  Fn+J:down  Tab:next", 4, h - 12);
-    dsp.drawString("Enter:sel  Bksp:del  Space:toggle", 4, h - 4);
+    dsp.drawString("Up:Fn+;  Down:Fn+.  Tab:next", 4, h - 12);
+    dsp.drawString("Vol:Fn+L/P Space:toggle  Bksp:dec", 4, h - 4);
 }
 
 // Run the WiFi setup page. Blocks until user saves or cancels.
@@ -285,20 +285,21 @@ static bool runSetupPage(WifiConfig& cfg) {
         // Cardputer Fn key routes through keyboard matrix.
         // When Fn is held, ks.fn=true.
         // Other keys pressed while Fn is held appear in ks.hid_keys as raw HID codes.
-        // Fn+J (HID 0x0d) = down, Fn+K (HID 0x0e) = up, Fn+L = vol down, Fn+P = vol up
+        // Fn+; (HID 0x33) = up, Fn+. (HID 0x37) = down
+        // Fn+, (HID 0x36) = left, Fn+/ (HID 0x38) = right
+        // Fn+L (HID 0x0f) = vol down, Fn+P (HID 0x13) = vol up
         if (ks.fn && ks.hid_keys.size() > prevHidSize) {
             // Find the new HID key that wasn't there before
             for (size_t i = prevHidSize; i < ks.hid_keys.size(); i++) {
                 uint8_t hk = ks.hid_keys[i];
-                // HID usage IDs: J=0x0d, K=0x0e, L=0x0f, P=0x13
-                if (hk == 0x0d) {  // J → down
-                    int next = ((int)field + 1) % FIELD_COUNT;
-                    field = (SetupField)next;
-                    redraw = true;
-                } else if (hk == 0x0e) {  // K → up
+                if (hk == 0x33) {  // ; → up
                     int prev = (int)field - 1;
                     if (prev < 0) prev = FIELD_COUNT - 1;
                     field = (SetupField)prev;
+                    redraw = true;
+                } else if (hk == 0x37) {  // . → down
+                    int next = ((int)field + 1) % FIELD_COUNT;
+                    field = (SetupField)next;
                     redraw = true;
                 } else if (hk == 0x0f) {  // L → volume down
                     if (field == SetupField::VOLUME && cfg.volume >= 16) {
