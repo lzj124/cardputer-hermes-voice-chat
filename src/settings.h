@@ -8,10 +8,12 @@
 #include "config.h"
 
 // ── Config file format ──────────────────────────────────────
-// /wifi.cfg — two lines:
+// /wifi.cfg — three lines:
 //   line 1: SSID
 //   line 2: password
-// Both are plain text, max 64 chars each, no trailing newlines in stored values.
+//   line 3: volume (0-255)
+// SSID/pass are plain text, max 64 chars each, no trailing newlines.
+// Volume is a decimal number.
 
 static constexpr const char* WIFI_CFG_FILE = "/wifi.cfg";
 
@@ -19,6 +21,7 @@ static constexpr const char* WIFI_CFG_FILE = "/wifi.cfg";
 struct WifiConfig {
     char ssid[65] = {0};
     char pass[65] = {0};
+    int  volume   = 255;  // 0-255 speaker volume
 };
 
 // ── Load WiFi config from SD ────────────────────────────────
@@ -58,8 +61,23 @@ static bool loadWifiConfig(WifiConfig& cfg) {
     }
     cfg.pass[idx] = '\0';
 
+    // Read volume line
+    char volBuf[8] = {0};
+    idx = 0;
+    while (f.available() && idx < 7) {
+        char c = f.read();
+        if (c == '\n' || c == '\r') break;
+        volBuf[idx++] = c;
+    }
+    volBuf[idx] = '\0';
+    if (idx > 0) {
+        int v = atoi(volBuf);
+        if (v >= 0 && v <= 255) cfg.volume = v;
+    }
+
     f.close();
-    Serial.printf("[CFG] Loaded WiFi: SSID=\"%s\" pass=%d chars\n", cfg.ssid, strlen(cfg.pass));
+    Serial.printf("[CFG] Loaded WiFi: SSID=\"%s\" pass=%d chars vol=%d\n",
+                  cfg.ssid, strlen(cfg.pass), cfg.volume);
     return true;
 }
 
@@ -71,21 +89,22 @@ static bool saveWifiConfig(const WifiConfig& cfg) {
         Serial.println("[CFG] Can't write /wifi.cfg");
         return false;
     }
-    f.printf("%s\n%s\n", cfg.ssid, cfg.pass);
+    f.printf("%s\n%s\n%d\n", cfg.ssid, cfg.pass, cfg.volume);
     f.close();
-    Serial.printf("[CFG] Saved WiFi: SSID=\"%s\"\n", cfg.ssid);
+    Serial.printf("[CFG] Saved WiFi: SSID=\"%s\" vol=%d\n", cfg.ssid, cfg.volume);
     return true;
 }
 
 // ── Setup Page ──────────────────────────────────────────────
 
-enum class SetupField { SSID, PASSWORD, SAVE, CANCEL };
+enum class SetupField { SSID, PASSWORD, VOLUME, SAVE, CANCEL };
 
 static constexpr int FIELD_SSID     = 0;
 static constexpr int FIELD_PASSWORD = 1;
-static constexpr int FIELD_SAVE     = 2;
-static constexpr int FIELD_CANCEL   = 3;
-static constexpr int FIELD_COUNT    = 4;
+static constexpr int FIELD_VOLUME   = 2;
+static constexpr int FIELD_SAVE     = 3;
+static constexpr int FIELD_CANCEL   = 4;
+static constexpr int FIELD_COUNT    = 5;
 
 // Draw the setup page
 static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long tickMs) {
@@ -96,16 +115,16 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
     dsp.fillScreen(TFT_BLACK);
     dsp.setTextSize(1);
     dsp.setTextColor(TFT_WHITE);
-    dsp.drawString("WiFi Setup", (w - 10 * 6) / 2, 2);
+    dsp.drawString("Settings", (w - 8 * 6) / 2, 2);
 
-    int y = 20;
+    int y = 18;
     int fieldIdx = (int)field;
 
     // SSID field
     {
         int x = 4;
         dsp.setTextColor(fieldIdx == FIELD_SSID ? TFT_YELLOW : TFT_CYAN);
-        dsp.drawString("SSID:", x, y);
+        dsp.drawString("WiFi:", x, y);
         x += 5 * 6 + 4;
 
         if (fieldIdx == FIELD_SSID) {
@@ -116,19 +135,18 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
         strncpy(display, cfg.ssid, sizeof(display) - 1);
         dsp.drawString(display, x, y);
 
-        // Cursor blink
         if (fieldIdx == FIELD_SSID && (tickMs / 500) % 2 == 0) {
             int cx = x + strlen(display) * 6;
             dsp.drawFastVLine(cx, y, 8, TFT_WHITE);
         }
     }
-    y += 14;
+    y += 12;
 
     // Password field
     {
         int x = 4;
         dsp.setTextColor(fieldIdx == FIELD_PASSWORD ? TFT_YELLOW : TFT_CYAN);
-        dsp.drawString("PASS:", x, y);
+        dsp.drawString("Pass:", x, y);
         x += 5 * 6 + 4;
 
         if (fieldIdx == FIELD_PASSWORD) {
@@ -146,7 +164,37 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
             dsp.drawFastVLine(cx, y, 8, TFT_WHITE);
         }
     }
-    y += 16;
+    y += 12;
+
+    // Volume field
+    {
+        int x = 4;
+        dsp.setTextColor(fieldIdx == FIELD_VOLUME ? TFT_YELLOW : TFT_CYAN);
+        dsp.drawString("Vol:", x, y);
+        x += 4 * 6 + 4;
+
+        if (fieldIdx == FIELD_VOLUME) {
+            dsp.fillRect(x - 2, y - 1, w - x + 2, 10, TFT_NAVY);
+        }
+        dsp.setTextColor(TFT_WHITE);
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d", cfg.volume);
+        dsp.drawString(buf, x, y);
+
+        // Volume bar (0-255 → 0-128px)
+        int barW = (cfg.volume * (w - x - 30)) / 255;
+        int barX = x + 30;
+        dsp.drawRect(barX, y, w - barX - 4, 8, 0x8410);
+        if (barW > 0) {
+            dsp.fillRect(barX + 1, y + 1, barW, 6,
+                         cfg.volume > 200 ? TFT_RED : (cfg.volume > 100 ? TFT_YELLOW : TFT_GREEN));
+        }
+
+        if (fieldIdx == FIELD_VOLUME && (tickMs / 500) % 2 == 0) {
+            dsp.drawFastVLine(x + strlen(buf) * 6, y, 8, TFT_WHITE);
+        }
+    }
+    y += 14;
 
     // Save button
     {
@@ -159,7 +207,7 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
         }
         dsp.drawString("[ Save & Exit ]", x + 4, y);
     }
-    y += 16;
+    y += 15;
 
     // Cancel button
     {
@@ -175,12 +223,12 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
 
     // Help text
     dsp.setTextColor(0x8410);
-    dsp.drawString("Tab/Down: next  Bksp: del", 4, h - 12);
-    dsp.drawString("Up: prev  Home: reboot", 4, h - 4);
+    dsp.drawString("Fn+J/Down:next  Fn+U/Up:prev", 4, h - 12);
+    dsp.drawString("Enter:select  Bksp:del", 4, h - 4);
 }
 
 // Run the WiFi setup page. Blocks until user saves or cancels.
-// Returns true if config was saved (caller should reconnect WiFi).
+// Run the WiFi setup page. Blocks until user saves or cancels.
 static bool runSetupPage(WifiConfig& cfg) {
     auto& dsp = M5Cardputer.Display;
     auto& kbd = M5Cardputer.Keyboard;
@@ -190,40 +238,33 @@ static bool runSetupPage(WifiConfig& cfg) {
     bool redraw = true;
     bool confChanged = false;
 
-    // Track last key state to detect new presses
     auto lastKeysState = kbd.keysState();
-    int lastKeysSize = -1;
+    std::vector<char> prevWord;
 
     while (true) {
         M5Cardputer.update();
-
-        // ── Detect new key presses ────────────────────────
-        // The word buffer grows when new printable keys are pressed
         kbd.updateKeysState();
         auto& ks = kbd.keysState();
         bool newPress = false;
 
-        // Check for new key events: word vector has new chars
-        static std::vector<char> prevWord;
         if (ks.word.size() > prevWord.size()) {
             newPress = true;
         }
 
-        // Check edge on special keys that don't add to word
+        bool fnNow  = ks.fn;
         bool enterNow = ks.enter && !lastKeysState.enter;
         bool delNow   = ks.del && !lastKeysState.del;
         bool tabNow   = ks.tab && !lastKeysState.tab;
 
-        // ── Handle Enter ──────────────────────────────────
+        // ── Enter: select/confirm current field ──────────
         if (enterNow) {
             if (field == SetupField::SSID) {
                 field = SetupField::PASSWORD;
-                prevWord.clear();
             } else if (field == SetupField::PASSWORD) {
+                field = SetupField::VOLUME;
+            } else if (field == SetupField::VOLUME) {
                 field = SetupField::SAVE;
-                prevWord.clear();
             } else if (field == SetupField::SAVE) {
-                // Save and return (setup() continues with new creds)
                 Serial.println("[SETUP] Saving config...");
                 saveWifiConfig(cfg);
                 confChanged = true;
@@ -236,10 +277,7 @@ static bool runSetupPage(WifiConfig& cfg) {
             redraw = true;
         }
 
-        // ── Handle Tab / Down arrow → next field ──────────
-        if (tabNow || (enterNow && field == SetupField::SAVE)) {
-            // already handled above
-        }
+        // ── Tab: next field ─────────────────────────────
         if (tabNow) {
             int next = ((int)field + 1) % FIELD_COUNT;
             field = (SetupField)next;
@@ -247,13 +285,36 @@ static bool runSetupPage(WifiConfig& cfg) {
             redraw = true;
         }
 
-        // ── Handle Up arrow / Shift+Tab → prev field ──────
-        // Check if Ctrl is held: use arrows
-        if (ks.ctrl && ks.word.size() > prevWord.size()) {
-            // ctrl+letter won't produce chars, ignore
+        // ── Fn navigation: Fn+J=down, Fn+U=up ──────────
+        if (fnNow && newPress && ks.word.size() > 0) {
+            char nav = ks.word.back();
+            if (nav == 'j' || nav == 'J') {
+                int next = ((int)field + 1) % FIELD_COUNT;
+                field = (SetupField)next;
+                prevWord.clear();
+                redraw = true;
+            } else if (nav == 'u' || nav == 'U') {
+                int prev = (int)field - 1;
+                if (prev < 0) prev = FIELD_COUNT - 1;
+                field = (SetupField)prev;
+                prevWord.clear();
+                redraw = true;
+            } else if (nav == 'l' || nav == 'L') {
+                // Decrease volume
+                if (field == SetupField::VOLUME && cfg.volume >= 16) {
+                    cfg.volume -= 16;
+                    redraw = true;
+                }
+            } else if (nav == 'p' || nav == 'P') {
+                // Increase volume
+                if (field == SetupField::VOLUME && cfg.volume <= 239) {
+                    cfg.volume += 16;
+                    redraw = true;
+                }
+            }
         }
 
-        // ── Handle Backspace ──────────────────────────────
+        // ── Backspace: delete char (SSID/Pass) or ↓ vol ─
         if (delNow) {
             if (field == SetupField::SSID) {
                 int len = strlen(cfg.ssid);
@@ -261,14 +322,16 @@ static bool runSetupPage(WifiConfig& cfg) {
             } else if (field == SetupField::PASSWORD) {
                 int len = strlen(cfg.pass);
                 if (len > 0) cfg.pass[len - 1] = '\0';
+            } else if (field == SetupField::VOLUME) {
+                if (cfg.volume >= 16) cfg.volume -= 16;
             }
             prevWord.clear();
             redraw = true;
         }
 
-        // ── Handle printable characters ───────────────────
-        if (newPress && ks.word.size() > 0) {
-            char c = ks.word.back();  // most recently typed char
+        // ── Printable chars (SSID/Pass only) ────────────
+        if (newPress && ks.word.size() > 0 && !fnNow) {
+            char c = ks.word.back();
             if (field == SetupField::SSID) {
                 int len = strlen(cfg.ssid);
                 if (len < (int)sizeof(cfg.ssid) - 1) {
@@ -281,41 +344,41 @@ static bool runSetupPage(WifiConfig& cfg) {
                     cfg.pass[len] = c;
                     cfg.pass[len + 1] = '\0';
                 }
+            } else if (field == SetupField::VOLUME && c >= '0' && c <= '9') {
+                // Digit input for volume
+                int v = cfg.volume * 10 + (c - '0');
+                if (v <= 255) cfg.volume = v;
             }
             redraw = true;
         }
 
-        // ── Handle modifier for field navigation ──────────
-        // Fn + U = up, Fn + J = down (Cardputer keyboard nav convention)
-        if (ks.fn) {
-            if (newPress && ks.word.size() > 0) {
-                char nav = ks.word.back();
-                if (nav == 'u' || nav == 'U') {
-                    int prev = (int)field - 1;
-                    if (prev < 0) prev = FIELD_COUNT - 1;
-                    field = (SetupField)prev;
-                    prevWord.clear();
-                    redraw = true;
-                } else if (nav == 'j' || nav == 'J') {
-                    int next = ((int)field + 1) % FIELD_COUNT;
-                    field = (SetupField)next;
-                    prevWord.clear();
-                    redraw = true;
+        // ── Space: toggle volume or add space to text ───
+        if (ks.space && !lastKeysState.space) {
+            if (field == SetupField::VOLUME) {
+                // Quick toggle: low/med/high
+                if (cfg.volume < 85) cfg.volume = 170;
+                else if (cfg.volume < 200) cfg.volume = 255;
+                else cfg.volume = 42;
+                redraw = true;
+            } else if (field == SetupField::SSID) {
+                int len = strlen(cfg.ssid);
+                if (len < (int)sizeof(cfg.ssid) - 1) {
+                    cfg.ssid[len] = ' ';
+                    cfg.ssid[len + 1] = '\0';
                 }
             }
         }
 
-        // ── Save previous state ───────────────────────────
+        // ── Save previous state ──────────────────────────
         lastKeysState = ks;
         prevWord = ks.word;
 
-        // ── Redraw if needed ──────────────────────────────
+        // ── Redraw ──────────────────────────────────────
         if (redraw) {
             drawSetupPage(cfg, field, millis() - startMs);
             redraw = false;
         }
 
-        // ── Redraw cursor blink periodically ──────────────
         unsigned long elapsed = millis() - startMs;
         if (elapsed > 30 && (elapsed % 250 < 5)) {
             drawSetupPage(cfg, field, millis() - startMs);

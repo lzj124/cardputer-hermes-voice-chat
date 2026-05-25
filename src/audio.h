@@ -163,6 +163,14 @@ public:
         }
     }
 
+    // Apply volume from config (0-255)
+    void applyVolume(int vol) {
+        if (vol < 0) vol = 0;
+        if (vol > 255) vol = 255;
+        M5Cardputer.Speaker.setVolume(vol);
+        Serial.printf("[AUDIO] Volume set to %d\n", vol);
+    }
+
     // Play from DRAM buffer (no SD mode)
     void playPCM(size_t pcmSamples) {
         if (pcmSamples == 0) return;
@@ -359,6 +367,13 @@ public:
             int sw = strlen(statusText) * 6;
             dsp.fillRect(0, h - 12, w, 12, TFT_BLACK);
             dsp.drawString(statusText, (w - sw) / 2, h - 11);
+        }
+
+        // Tab hint on SLEEP
+        if (state == State::SLEEP) {
+            dsp.setTextSize(1);
+            dsp.setTextColor(0x4208);  // dark grey
+            dsp.drawString("Tab:Setup", w - 9 * 6 - 2, 2);
         }
     }
 };

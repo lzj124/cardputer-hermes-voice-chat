@@ -278,6 +278,8 @@ void setup() {
     WiFi.begin(wifiCfg.ssid, wifiCfg.pass);
 
     M5Cardputer.Speaker.setVolume(255);
+    // Apply volume from config
+    audio.applyVolume(wifiCfg.volume);
     enterState(State::SLEEP);
     lastActivity = millis();
 }
