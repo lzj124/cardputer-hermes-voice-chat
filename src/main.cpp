@@ -296,6 +296,21 @@ void loop() {
     }
 
     if (currentState == State::SLEEP) {
+        // ── Check for Tab key → WiFi setup ────────────
+        auto& ks = M5Cardputer.Keyboard.keysState();
+        if (ks.tab) {
+            Serial.println("[MAIN] Tab pressed — entering WiFi setup");
+            if (audio.sdAvailable) {
+                runSetupPage(wifiCfg);
+            } else {
+                M5Cardputer.Display.fillScreen(TFT_BLACK);
+                M5Cardputer.Display.setTextColor(TFT_RED);
+                M5Cardputer.Display.drawString("Need SD card!", 4, 60);
+                delay(1500);
+            }
+            return;
+        }
+
         if (fnIsHeld()) {
             Serial.println("[MAIN] Recording...");
             audio.recordedSamples = 0;
