@@ -72,12 +72,10 @@ Transport activeTransport() {
 }
 
 // ── Fn Key ──────────────────────────────────────────────────
-static bool fnDown = false;
+bool fnDown = false;
 
 void updateFnState() {
-    if (M5Cardputer.Keyboard.isChange()) {
-        fnDown = M5Cardputer.Keyboard.isPressed();
-    }
+    fnDown = M5Cardputer.Keyboard.keysState().fn;
 }
 
 bool fnIsHeld() {
