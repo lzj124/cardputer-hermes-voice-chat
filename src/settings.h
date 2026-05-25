@@ -117,7 +117,7 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
     dsp.setTextColor(TFT_WHITE);
     dsp.drawString("Settings", (w - 8 * 6) / 2, 2);
 
-    int y = 18;
+    int y = 16;
     int fieldIdx = (int)field;
 
     // SSID field
@@ -133,6 +133,15 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
         dsp.setTextColor(TFT_WHITE);
         char display[65];
         strncpy(display, cfg.ssid, sizeof(display) - 1);
+
+        // Truncate long SSID to fit
+        int maxChars = (w - x) / 6;
+        int dlen = strlen(display);
+        if (dlen > maxChars) {
+            display[maxChars - 2] = '.';
+            display[maxChars - 1] = '.';
+            display[maxChars] = '\0';
+        }
         dsp.drawString(display, x, y);
 
         if (fieldIdx == FIELD_SSID && (tickMs / 500) % 2 == 0) {
@@ -140,7 +149,7 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
             dsp.drawFastVLine(cx, y, 8, TFT_WHITE);
         }
     }
-    y += 12;
+    y += 11;
 
     // Password field
     {
@@ -164,7 +173,7 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
             dsp.drawFastVLine(cx, y, 8, TFT_WHITE);
         }
     }
-    y += 12;
+    y += 11;
 
     // Volume field
     {
@@ -194,7 +203,7 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
             dsp.drawFastVLine(x + strlen(buf) * 6, y, 8, TFT_WHITE);
         }
     }
-    y += 14;
+    y += 12;
 
     // Save button
     {
@@ -207,7 +216,7 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
         }
         dsp.drawString("[ Save & Exit ]", x + 4, y);
     }
-    y += 15;
+    y += 13;
 
     // Cancel button
     {
@@ -223,8 +232,8 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
 
     // Help text
     dsp.setTextColor(0x8410);
-    dsp.drawString("Up:Fn+;  Down:Fn+.  Tab:next", 4, h - 12);
-    dsp.drawString("Vol:Fn+L/P Space:toggle  Bksp:dec", 4, h - 4);
+    dsp.drawString("Fn+;,./:nav  Tab:next", 4, h - 12);
+    dsp.drawString("L/R:vol +/- Space:toggle", 4, h - 4);
 }
 
 // Run the WiFi setup page. Blocks until user saves or cancels.
@@ -301,12 +310,12 @@ static bool runSetupPage(WifiConfig& cfg) {
                     int next = ((int)field + 1) % FIELD_COUNT;
                     field = (SetupField)next;
                     redraw = true;
-                } else if (hk == 0x0f) {  // L → volume down
+                } else if (hk == 0x36) {  // , → left (volume down on Vol field)
                     if (field == SetupField::VOLUME && cfg.volume >= 16) {
                         cfg.volume -= 16;
                         redraw = true;
                     }
-                } else if (hk == 0x13) {  // P → volume up
+                } else if (hk == 0x38) {  // / → right (volume up on Vol field)
                     if (field == SetupField::VOLUME && cfg.volume <= 239) {
                         cfg.volume += 16;
                         redraw = true;
