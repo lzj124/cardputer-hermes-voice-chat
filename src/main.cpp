@@ -8,6 +8,7 @@
 #include "config.h"
 #include "audio.h"
 #include "network.h"
+#include "settings.h"
 
 // ── Globals ─────────────────────────────────────────────────
 Audio   audio;
@@ -25,6 +26,7 @@ unsigned long lastActivity   = 0;
 unsigned long lastWifiAttempt = 0;
 const unsigned long WIFI_RETRY_INTERVAL = 10000;  // retry every 10s
 bool wifiConnected = false;
+WifiConfig wifiCfg;  // loaded from SD at startup
 
 void maintainWifi() {
     wl_status_t status = WiFi.status();
@@ -41,7 +43,7 @@ void maintainWifi() {
     } else if (status == WL_NO_SHIELD || status == WL_CONNECT_FAILED) {
         WiFi.disconnect(false, true);  // full reset
         delay(100);
-        WiFi.begin(WIFI_SSID, WIFI_PASS);
+        WiFi.begin(wifiCfg.ssid, wifiCfg.pass);
     }
 }
 
@@ -247,14 +249,35 @@ void setup() {
         while (1) delay(1000);
     }
 
+    // ── Load WiFi config from SD ─────────────────────────
+    if (audio.sdAvailable) {
+        loadWifiConfig(wifiCfg);
+    }
+
+    // ── Setup page trigger (hold Fn at startup) ────────────
+    delay(500);  // wait for keyboard init
+    M5Cardputer.update();
+    if (M5Cardputer.Keyboard.keysState().fn) {
+        Serial.println("[MAIN] Fn held at startup — entering WiFi setup");
+        if (audio.sdAvailable) {
+            runSetupPage(wifiCfg);  // blocks until save/cancel, saves to SD
+        } else {
+            M5Cardputer.Display.fillScreen(TFT_BLACK);
+            M5Cardputer.Display.setTextColor(TFT_RED);
+            M5Cardputer.Display.drawString("Need SD card!", 4, 60);
+            M5Cardputer.Display.drawString("for WiFi setup", 4, 74);
+            delay(2000);
+        }
+    }
+
     // ── Start both transports ────────────────────────────
     network.begin();          // init proxyHost/proxyPort (ESP32 global ctor workaround)
     network.transport = Transport::WIFI;
     network.onStatus = onNetworkStatus;  // wire up status display
     WiFi.mode(WIFI_STA);  // Explicit station mode
     WiFi.setAutoReconnect(true);
-    Serial.printf("[WIFI] Connecting to %s (background)\n", WIFI_SSID);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    Serial.printf("[WIFI] Connecting to %s (background)\n", wifiCfg.ssid);
+    WiFi.begin(wifiCfg.ssid, wifiCfg.pass);
 
     M5Cardputer.Speaker.setVolume(255);
     enterState(State::SLEEP);
