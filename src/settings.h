@@ -232,8 +232,8 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
 
     // Help text
     dsp.setTextColor(0x8410);
-    dsp.drawString("Fn+;,./:nav  Tab:next", 4, h - 12);
-    dsp.drawString("L/R:vol +/- Space:toggle", 4, h - 4);
+    dsp.drawString("Fn+WASD:nav  Tab:next", 4, h - 12);
+    dsp.drawString("A/D:vol +/- Space:toggle", 4, h - 4);
 }
 
 // Run the WiFi setup page. Blocks until user saves or cancels.
@@ -294,28 +294,27 @@ static bool runSetupPage(WifiConfig& cfg) {
         // Cardputer Fn key routes through keyboard matrix.
         // When Fn is held, ks.fn=true.
         // Other keys pressed while Fn is held appear in ks.hid_keys as raw HID codes.
-        // Fn+; (HID 0x33) = up, Fn+. (HID 0x37) = down
-        // Fn+, (HID 0x36) = left, Fn+/ (HID 0x38) = right
-        // Fn+L (HID 0x0f) = vol down, Fn+P (HID 0x13) = vol up
+        // Fn+W (HID 0x1a) = up, Fn+S (HID 0x16) = down
+        // Fn+A (HID 0x04) = left, Fn+D (HID 0x07) = right
         if (ks.fn && ks.hid_keys.size() > prevHidSize) {
             // Find the new HID key that wasn't there before
             for (size_t i = prevHidSize; i < ks.hid_keys.size(); i++) {
                 uint8_t hk = ks.hid_keys[i];
-                if (hk == 0x33) {  // ; → up
+                if (hk == 0x1a) {  // W → up
                     int prev = (int)field - 1;
                     if (prev < 0) prev = FIELD_COUNT - 1;
                     field = (SetupField)prev;
                     redraw = true;
-                } else if (hk == 0x37) {  // . → down
+                } else if (hk == 0x16) {  // S → down
                     int next = ((int)field + 1) % FIELD_COUNT;
                     field = (SetupField)next;
                     redraw = true;
-                } else if (hk == 0x36) {  // , → left (volume down on Vol field)
+                } else if (hk == 0x04) {  // A → left (vol down on Vol field)
                     if (field == SetupField::VOLUME && cfg.volume >= 16) {
                         cfg.volume -= 16;
                         redraw = true;
                     }
-                } else if (hk == 0x38) {  // / → right (volume up on Vol field)
+                } else if (hk == 0x07) {  // D → right (vol up on Vol field)
                     if (field == SetupField::VOLUME && cfg.volume <= 239) {
                         cfg.volume += 16;
                         redraw = true;
