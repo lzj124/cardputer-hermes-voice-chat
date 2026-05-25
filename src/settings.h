@@ -228,7 +228,7 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
 }
 
 // Run the WiFi setup page. Blocks until user saves or cancels.
-// Run the WiFi setup page. Blocks until user saves or cancels.
+// Returns true if config was saved.
 static bool runSetupPage(WifiConfig& cfg) {
     auto& dsp = M5Cardputer.Display;
     auto& kbd = M5Cardputer.Keyboard;
@@ -238,46 +238,26 @@ static bool runSetupPage(WifiConfig& cfg) {
     bool redraw = true;
     bool confChanged = false;
 
-    auto lastKeysState = kbd.keysState();
+    auto lastKs = kbd.keysState();
     std::vector<char> prevWord;
 
     while (true) {
         M5Cardputer.update();
         kbd.updateKeysState();
         auto& ks = kbd.keysState();
-        bool newPress = false;
 
-        if (ks.word.size() > prevWord.size()) {
-            newPress = true;
-        }
+        // Edge detection on modifiers
+        bool fnFall = lastKs.fn && !ks.fn;   // Fn released
+        bool fnRise = !lastKs.fn && ks.fn;   // Fn pressed
+        bool enterNow = ks.enter && !lastKs.enter;
+        bool delNow   = ks.del && !lastKs.del;
+        bool tabNow   = ks.tab && !lastKs.tab;
+        bool spaceNow = ks.space && !lastKs.space;
 
-        bool fnNow  = ks.fn;
-        bool enterNow = ks.enter && !lastKeysState.enter;
-        bool delNow   = ks.del && !lastKeysState.del;
-        bool tabNow   = ks.tab && !lastKeysState.tab;
+        // new char typed (Fn held → navigation, not char)
+        bool newChar = (ks.word.size() > prevWord.size()) && !ks.fn;
 
-        // ── Enter: select/confirm current field ──────────
-        if (enterNow) {
-            if (field == SetupField::SSID) {
-                field = SetupField::PASSWORD;
-            } else if (field == SetupField::PASSWORD) {
-                field = SetupField::VOLUME;
-            } else if (field == SetupField::VOLUME) {
-                field = SetupField::SAVE;
-            } else if (field == SetupField::SAVE) {
-                Serial.println("[SETUP] Saving config...");
-                saveWifiConfig(cfg);
-                confChanged = true;
-                break;
-            } else if (field == SetupField::CANCEL) {
-                confChanged = false;
-                break;
-            }
-            prevWord.clear();
-            redraw = true;
-        }
-
-        // ── Tab: next field ─────────────────────────────
+        // ── Navigation: Tab ──────────────────────────
         if (tabNow) {
             int next = ((int)field + 1) % FIELD_COUNT;
             field = (SetupField)next;
@@ -285,36 +265,63 @@ static bool runSetupPage(WifiConfig& cfg) {
             redraw = true;
         }
 
-        // ── Fn navigation: Fn+J=down, Fn+U=up ──────────
-        if (fnNow && newPress && ks.word.size() > 0) {
-            char nav = ks.word.back();
-            if (nav == 'j' || nav == 'J') {
+        // ── Navigation: Enter moves to next field ────
+        if (enterNow) {
+            if (field == SetupField::SAVE) {
+                Serial.println("[SETUP] Saving config...");
+                saveWifiConfig(cfg);
+                confChanged = true;
+                break;
+            } else if (field == SetupField::CANCEL) {
+                break;
+            } else {
+                int next = ((int)field + 1) % FIELD_COUNT;
+                field = (SetupField)next;
+            }
+            prevWord.clear();
+            redraw = true;
+        }
+
+        // ── Navigation: Fn key as shift for arrows ───
+        // Cardputer: pressing Fn + letter = shift+letter
+        // So when Fn is held, letters come out uppercase
+        // We detect Fn press/release to navigate, not typed chars
+        if (fnRise) {
+            // Fn was released — check if any nav key was pressed while Fn was held
+            // We track this by comparing word size changes while fn was true
+        }
+
+        // Fn navigation: while Fn is held, check for arrow-style keys
+        // Actually on Cardputer, Fn+J sends uppercase J
+        // Let's detect: if ks.fn is true AND we got a new uppercase letter
+        if (ks.fn && ks.word.size() > prevWord.size()) {
+            char c = ks.word.back();
+            if (c == 'J') {
                 int next = ((int)field + 1) % FIELD_COUNT;
                 field = (SetupField)next;
                 prevWord.clear();
                 redraw = true;
-            } else if (nav == 'u' || nav == 'U') {
+            } else if (c == 'U') {
                 int prev = (int)field - 1;
                 if (prev < 0) prev = FIELD_COUNT - 1;
                 field = (SetupField)prev;
                 prevWord.clear();
                 redraw = true;
-            } else if (nav == 'l' || nav == 'L') {
-                // Decrease volume
+            } else if (c == 'L') {
                 if (field == SetupField::VOLUME && cfg.volume >= 16) {
                     cfg.volume -= 16;
                     redraw = true;
                 }
-            } else if (nav == 'p' || nav == 'P') {
-                // Increase volume
+            } else if (c == 'P') {
                 if (field == SetupField::VOLUME && cfg.volume <= 239) {
                     cfg.volume += 16;
                     redraw = true;
                 }
             }
+            // Don't consume the char for SSID/Pass when Fn held
         }
 
-        // ── Backspace: delete char (SSID/Pass) or ↓ vol ─
+        // ── Backspace ────────────────────────────────
         if (delNow) {
             if (field == SetupField::SSID) {
                 int len = strlen(cfg.ssid);
@@ -329,8 +336,8 @@ static bool runSetupPage(WifiConfig& cfg) {
             redraw = true;
         }
 
-        // ── Printable chars (SSID/Pass only) ────────────
-        if (newPress && ks.word.size() > 0 && !fnNow) {
+        // ── Printable chars (only when Fn NOT held) ──
+        if (newChar && ks.word.size() > 0) {
             char c = ks.word.back();
             if (field == SetupField::SSID) {
                 int len = strlen(cfg.ssid);
@@ -344,18 +351,13 @@ static bool runSetupPage(WifiConfig& cfg) {
                     cfg.pass[len] = c;
                     cfg.pass[len + 1] = '\0';
                 }
-            } else if (field == SetupField::VOLUME && c >= '0' && c <= '9') {
-                // Digit input for volume
-                int v = cfg.volume * 10 + (c - '0');
-                if (v <= 255) cfg.volume = v;
             }
             redraw = true;
         }
 
-        // ── Space: toggle volume or add space to text ───
-        if (ks.space && !lastKeysState.space) {
+        // ── Space: toggle volume (when on Vol field) ─
+        if (spaceNow) {
             if (field == SetupField::VOLUME) {
-                // Quick toggle: low/med/high
                 if (cfg.volume < 85) cfg.volume = 170;
                 else if (cfg.volume < 200) cfg.volume = 255;
                 else cfg.volume = 42;
@@ -369,16 +371,15 @@ static bool runSetupPage(WifiConfig& cfg) {
             }
         }
 
-        // ── Save previous state ──────────────────────────
-        lastKeysState = ks;
+        lastKs = ks;
         prevWord = ks.word;
 
-        // ── Redraw ──────────────────────────────────────
         if (redraw) {
             drawSetupPage(cfg, field, millis() - startMs);
             redraw = false;
         }
 
+        // Cursor blink
         unsigned long elapsed = millis() - startMs;
         if (elapsed > 30 && (elapsed % 250 < 5)) {
             drawSetupPage(cfg, field, millis() - startMs);
@@ -387,5 +388,8 @@ static bool runSetupPage(WifiConfig& cfg) {
         delay(20);
     }
 
+    // Clear screen before returning
+    dsp.fillScreen(TFT_BLACK);
+    delay(50);
     return confChanged;
 }

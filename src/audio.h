@@ -369,11 +369,13 @@ public:
             dsp.drawString(statusText, (w - sw) / 2, h - 11);
         }
 
-        // Tab hint on SLEEP
+        // Tab hint on SLEEP — bottom left (avoid heartbeat dot at top-right)
         if (state == State::SLEEP) {
+            // Erase old area first
+            dsp.fillRect(0, h - 12, 9 * 6 + 4, 10, TFT_BLACK);
             dsp.setTextSize(1);
             dsp.setTextColor(0x4208);  // dark grey
-            dsp.drawString("Tab:Setup", w - 9 * 6 - 2, 2);
+            dsp.drawString("Tab:Setup", 2, h - 12);
         }
     }
 };

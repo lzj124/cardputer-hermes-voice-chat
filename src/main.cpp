@@ -258,7 +258,7 @@ void setup() {
     if (M5Cardputer.Keyboard.keysState().fn) {
         Serial.println("[MAIN] Fn held at startup — entering WiFi setup");
         if (audio.sdAvailable) {
-            runSetupPage(wifiCfg);  // blocks until save/cancel, saves to SD
+            runSetupPage(wifiCfg);  // returns after save/cancel
         } else {
             M5Cardputer.Display.fillScreen(TFT_BLACK);
             M5Cardputer.Display.setTextColor(TFT_RED);
@@ -302,6 +302,8 @@ void loop() {
             Serial.println("[MAIN] Tab pressed — entering WiFi setup");
             if (audio.sdAvailable) {
                 runSetupPage(wifiCfg);
+                // Re-enter SLEEP so UI redraws fresh
+                enterState(State::SLEEP);
             } else {
                 M5Cardputer.Display.fillScreen(TFT_BLACK);
                 M5Cardputer.Display.setTextColor(TFT_RED);
