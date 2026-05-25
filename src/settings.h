@@ -223,8 +223,8 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
 
     // Help text
     dsp.setTextColor(0x8410);
-    dsp.drawString("Fn+J/Down:next  Fn+U/Up:prev", 4, h - 12);
-    dsp.drawString("Enter:select  Bksp:del", 4, h - 4);
+    dsp.drawString("Fn+K:up  Fn+J:down  Tab:next", 4, h - 12);
+    dsp.drawString("Enter:sel  Bksp:del  Space:toggle", 4, h - 4);
 }
 
 // Run the WiFi setup page. Blocks until user saves or cancels.
@@ -240,6 +240,7 @@ static bool runSetupPage(WifiConfig& cfg) {
 
     auto lastKs = kbd.keysState();
     std::vector<char> prevWord;
+    size_t prevHidSize = 0;
 
     while (true) {
         M5Cardputer.update();
@@ -247,8 +248,6 @@ static bool runSetupPage(WifiConfig& cfg) {
         auto& ks = kbd.keysState();
 
         // Edge detection on modifiers
-        bool fnFall = lastKs.fn && !ks.fn;   // Fn released
-        bool fnRise = !lastKs.fn && ks.fn;   // Fn pressed
         bool enterNow = ks.enter && !lastKs.enter;
         bool delNow   = ks.del && !lastKs.del;
         bool tabNow   = ks.tab && !lastKs.tab;
@@ -282,43 +281,38 @@ static bool runSetupPage(WifiConfig& cfg) {
             redraw = true;
         }
 
-        // ── Navigation: Fn key as shift for arrows ───
-        // Cardputer: pressing Fn + letter = shift+letter
-        // So when Fn is held, letters come out uppercase
-        // We detect Fn press/release to navigate, not typed chars
-        if (fnRise) {
-            // Fn was released — check if any nav key was pressed while Fn was held
-            // We track this by comparing word size changes while fn was true
-        }
-
-        // Fn navigation: while Fn is held, check for arrow-style keys
-        // Actually on Cardputer, Fn+J sends uppercase J
-        // Let's detect: if ks.fn is true AND we got a new uppercase letter
-        if (ks.fn && ks.word.size() > prevWord.size()) {
-            char c = ks.word.back();
-            if (c == 'J') {
-                int next = ((int)field + 1) % FIELD_COUNT;
-                field = (SetupField)next;
-                prevWord.clear();
-                redraw = true;
-            } else if (c == 'U') {
-                int prev = (int)field - 1;
-                if (prev < 0) prev = FIELD_COUNT - 1;
-                field = (SetupField)prev;
-                prevWord.clear();
-                redraw = true;
-            } else if (c == 'L') {
-                if (field == SetupField::VOLUME && cfg.volume >= 16) {
-                    cfg.volume -= 16;
+        // ── Navigation: Fn+key (hid_keys based) ────────
+        // Cardputer Fn key routes through keyboard matrix.
+        // When Fn is held, ks.fn=true.
+        // Other keys pressed while Fn is held appear in ks.hid_keys as raw HID codes.
+        // Fn+J (HID 0x0d) = down, Fn+K (HID 0x0e) = up, Fn+L = vol down, Fn+P = vol up
+        if (ks.fn && ks.hid_keys.size() > prevHidSize) {
+            // Find the new HID key that wasn't there before
+            for (size_t i = prevHidSize; i < ks.hid_keys.size(); i++) {
+                uint8_t hk = ks.hid_keys[i];
+                // HID usage IDs: J=0x0d, K=0x0e, L=0x0f, P=0x13
+                if (hk == 0x0d) {  // J → down
+                    int next = ((int)field + 1) % FIELD_COUNT;
+                    field = (SetupField)next;
                     redraw = true;
-                }
-            } else if (c == 'P') {
-                if (field == SetupField::VOLUME && cfg.volume <= 239) {
-                    cfg.volume += 16;
+                } else if (hk == 0x0e) {  // K → up
+                    int prev = (int)field - 1;
+                    if (prev < 0) prev = FIELD_COUNT - 1;
+                    field = (SetupField)prev;
                     redraw = true;
+                } else if (hk == 0x0f) {  // L → volume down
+                    if (field == SetupField::VOLUME && cfg.volume >= 16) {
+                        cfg.volume -= 16;
+                        redraw = true;
+                    }
+                } else if (hk == 0x13) {  // P → volume up
+                    if (field == SetupField::VOLUME && cfg.volume <= 239) {
+                        cfg.volume += 16;
+                        redraw = true;
+                    }
                 }
             }
-            // Don't consume the char for SSID/Pass when Fn held
+            prevWord.clear();
         }
 
         // ── Backspace ────────────────────────────────
@@ -373,6 +367,7 @@ static bool runSetupPage(WifiConfig& cfg) {
 
         lastKs = ks;
         prevWord = ks.word;
+        prevHidSize = ks.hid_keys.size();
 
         if (redraw) {
             drawSetupPage(cfg, field, millis() - startMs);
