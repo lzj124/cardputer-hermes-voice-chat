@@ -60,5 +60,6 @@ static constexpr int   WAVE_AMP_MAX   = 50;
 
 // ── Timing (ms) ─────────────────────────────────────────────
 static constexpr unsigned long HTTP_TIMEOUT      = 120000; // 120s — wait for OpenClaw
+static constexpr unsigned long USB_ALIVE_TIMEOUT  = 5000;   // 5s — USB heartbeat timeout for isUsbAlive()
 static constexpr unsigned long ERROR_DISPLAY_MS  = 2000;   // show error 2s
 static constexpr unsigned long SLEEP_AFTER_MS    = 60000;  // go to sleep after 60s idle

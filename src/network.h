@@ -17,6 +17,10 @@ public:
     int         proxyPort;
     Transport   transport = Transport::WIFI;
 
+    // USB heartbeat — track last successful bridge handshake
+    bool         usbAlive  = false;
+    unsigned long lastUsbOk = 0;
+
     // Must call begin() from setup() — ESP32 global ctor unreliable for member init
     void begin() {
         proxyHost = PROXY_HOST;
@@ -58,6 +62,8 @@ public:
                 if (strcmp(buf, "OK") == 0) {
                     Serial.println("[USB] Bridge connected");
                     usbPending = false;
+                    usbAlive = true;
+                    lastUsbOk = millis();
                     return true;
                 }
             }
@@ -67,6 +73,11 @@ public:
             usbPending = false;
         }
         return false;
+    }
+
+    // USB is alive if we've received OK within the heartbeat window
+    bool isUsbAlive() {
+        return usbAlive && (millis() - lastUsbOk < USB_ALIVE_TIMEOUT);
     }
 
     // ── Voice Pipeline ────────────────────────────────────

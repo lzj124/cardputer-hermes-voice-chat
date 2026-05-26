@@ -306,23 +306,25 @@ public:
             if (state == State::SLEEP) {
                 statusText[0] = '\0';
             }
+        }
 
-            // Top-left indicators
+        // ── Dynamic indicators (dim when inactive, never disappear) ──
+        {
             dsp.setTextSize(1);
-            int x = 2;
+            // WiFi: fixed x=2
             bool wifiOk = (WiFi.status() == WL_CONNECTED);
-            dsp.setTextColor(wifiOk ? 0x07E0 : 0xF800);
-            dsp.drawString(wifiOk ? "W" : "x", x, 2);
-            x += 10;
-            if (network.transport == Transport::USB) {
-                dsp.setTextColor(TFT_CYAN);
-                dsp.drawString("USB", x, 2);
-                x += 24;
-            }
-            if (sdAvailable) {
-                dsp.setTextColor(0x07E0);
-                dsp.drawString("SD", x, 2);
-            }
+            dsp.fillRect(2, 2, 10, 8, TFT_BLACK);
+            dsp.setTextColor(wifiOk ? 0x07E0 : 0x4208);  // green / dark grey
+            dsp.drawString("W", 2, 2);
+            // USB: fixed x=12
+            bool usbOk = (network.transport == Transport::USB);
+            dsp.fillRect(12, 2, 26, 8, TFT_BLACK);
+            dsp.setTextColor(usbOk ? TFT_CYAN : 0x4208);  // cyan / dark grey
+            dsp.drawString("USB", 12, 2);
+            // SD: fixed x=40
+            dsp.fillRect(40, 2, 18, 8, TFT_BLACK);
+            dsp.setTextColor(sdAvailable ? 0x07E0 : 0x4208);  // green / dark grey
+            dsp.drawString("SD", 40, 2);
         }
 
         // ── Dynamic (every frame) ────────────────────────
@@ -332,14 +334,6 @@ public:
             lastBeat = millis();
         }
         dsp.fillRect(w - 8, 2, 6, 6, heartbeat ? TFT_GREEN : TFT_DARKGREEN);
-
-        // Cycle count
-        dsp.setTextSize(1);
-        dsp.setTextColor(TFT_GREEN);
-        char cycleBuf[12];
-        snprintf(cycleBuf, sizeof(cycleBuf), "#%zu", cycleCount);
-        dsp.fillRect(w - 50, 2, 38, 10, TFT_BLACK);  // erase old
-        dsp.drawString(cycleBuf, w - dsp.textWidth(cycleBuf) - 10, 2);
 
         // State label (centered)
         const char* label = "";

@@ -47,17 +47,47 @@ void maintainWifi() {
     }
 }
 
+// ── SD card detection ──────────────────────────────────────
+unsigned long lastSdPoll = 0;
+const unsigned long SD_POLL_INTERVAL = 2000;  // check every 2s
+
+void maintainSD() {
+    if (millis() - lastSdPoll < SD_POLL_INTERVAL) return;
+    lastSdPoll = millis();
+
+    bool wasAvailable = audio.sdAvailable;
+    audio.sdAvailable = (SD.cardType() != CARD_NONE);
+    if (wasAvailable != audio.sdAvailable) {
+        Serial.printf("[MAIN] SD %s\n", audio.sdAvailable ? "inserted" : "removed");
+        audio.lastDrawnState = State::AWAKE;  // force indicator redraw
+    }
+}
+
 // ── USB bridge detection ────────────────────────────────────
 unsigned long lastUsbPoll = 0;
 const unsigned long USB_POLL_INTERVAL = 3000;  // poll every 3s
+int usbDeadCount = 0;  // consecutive heartbeat failures
 
 void maintainUsb() {
     if (millis() - lastUsbPoll < USB_POLL_INTERVAL) return;
     lastUsbPoll = millis();
 
     if (network.usbPoll()) {
-        network.transport = Transport::USB;
-        Serial.println("[MAIN] Switched to USB");
+        if (network.transport != Transport::USB) {
+            network.transport = Transport::USB;
+            Serial.println("[MAIN] Switched to USB");
+        }
+        usbDeadCount = 0;
+    } else if (network.transport == Transport::USB && !network.isUsbAlive()) {
+        // USB was active but heartbeat died — count failures
+        usbDeadCount++;
+        if (usbDeadCount >= 3) {  // 3 consecutive failures (~9s) → fallback
+            network.transport = Transport::WIFI;
+            usbDeadCount = 0;
+            Serial.println("[MAIN] USB dead, falling back to WiFi");
+            snprintf(audio.statusText, sizeof(audio.statusText), "USB lost");
+            audio.lastDrawnState = State::AWAKE;
+        }
     }
 }
 
@@ -65,7 +95,6 @@ void maintainUsb() {
 // USB > WiFi. Returns the active transport.
 Transport activeTransport() {
     if (network.transport == Transport::USB) {
-        // TODO: detect USB disconnect, fallback to WiFi
         return Transport::USB;
     }
     return Transport::WIFI;
@@ -149,6 +178,7 @@ void handleProcessing() {
         // ── WiFi mode ──────────────────────────────────
         if (!wifiConnected) {
             Serial.println("[MAIN] No WiFi, can't send");
+            snprintf(audio.statusText, sizeof(audio.statusText), "No WiFi");
             enterState(State::ERROR_WAIT);
             return;
         }
@@ -179,6 +209,8 @@ void handleProcessing() {
 
     if (responseSamples == 0) {
         Serial.println("[MAIN] Pipeline failed");
+        snprintf(audio.statusText, sizeof(audio.statusText),
+                 t == Transport::USB ? "USB error" : "Server error");
         enterState(State::ERROR_WAIT);
         return;
     }
@@ -206,7 +238,6 @@ void handleSpeaking() {
     if (!more) {
         if (audio.useSD || !audio.isPlaying()) {
             audio.stopPlayback();
-            audio.cycleCount++;
             enterState(State::SLEEP);
         }
         return;
@@ -291,6 +322,8 @@ void loop() {
 
     // ── Background transport maintenance (always) ────────
     maintainWifi();
+    maintainSD();
+    // USB poll: only in SLEEP (avoids protocol interference with sendVoiceUSB)
     if (currentState == State::SLEEP) {
         maintainUsb();
     }
@@ -301,11 +334,18 @@ void loop() {
         if (ks.tab) {
             Serial.println("[MAIN] Tab pressed — entering WiFi setup");
             if (audio.sdAvailable) {
-                runSetupPage(wifiCfg);
+                bool saved = runSetupPage(wifiCfg);
                 // Force full screen redraw on return
                 audio.lastDrawnState = State::AWAKE;
                 audio.statusText[0] = '\0';
                 enterState(State::SLEEP);
+                // Reconnect WiFi if config was changed
+                if (saved) {
+                    Serial.printf("[WIFI] Reconnecting to %s\n", wifiCfg.ssid);
+                    WiFi.disconnect(true);
+                    delay(200);
+                    WiFi.begin(wifiCfg.ssid, wifiCfg.pass);
+                }
             } else {
                 M5Cardputer.Display.fillScreen(TFT_BLACK);
                 M5Cardputer.Display.setTextColor(TFT_RED);
