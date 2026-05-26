@@ -7,6 +7,9 @@
 #include <SD.h>
 #include "config.h"
 
+class Audio;  // forward declaration
+extern Audio audio;  // defined in main.cpp
+
 // ── Config file format ──────────────────────────────────────
 // /wifi.cfg — three lines:
 //   line 1: SSID
@@ -232,8 +235,8 @@ static void drawSetupPage(const WifiConfig& cfg, SetupField field, unsigned long
 
     // Help text
     dsp.setTextColor(0x8410);
-    dsp.drawString("Fn+WASD:nav  Tab:next", 4, h - 12);
-    dsp.drawString("A/D:vol +/- Space:toggle", 4, h - 4);
+    dsp.drawString("Fn+^<>v:nav  Tab:next", 4, h - 12);
+    dsp.drawString("Enter:sel  Del:dec", 4, h - 4);
 }
 
 // Run the WiFi setup page. Blocks until user saves or cancels.
@@ -291,32 +294,34 @@ static bool runSetupPage(WifiConfig& cfg) {
         }
 
         // ── Navigation: Fn+key (hid_keys based) ────────
-        // Cardputer Fn key routes through keyboard matrix.
-        // When Fn is held, ks.fn=true.
-        // Other keys pressed while Fn is held appear in ks.hid_keys as raw HID codes.
-        // Fn+W (HID 0x1a) = up, Fn+S (HID 0x16) = down
-        // Fn+A (HID 0x04) = left, Fn+D (HID 0x07) = right
+        // Cardputer: Fn+; (HID 0x33) = up, Fn+. (HID 0x37) = down
+        // Fn+, (HID 0x36) = left, Fn+/ (HID 0x38) = right
         if (ks.fn && ks.hid_keys.size() > prevHidSize) {
-            // Find the new HID key that wasn't there before
             for (size_t i = prevHidSize; i < ks.hid_keys.size(); i++) {
                 uint8_t hk = ks.hid_keys[i];
-                if (hk == 0x1a) {  // W → up
+                if (hk == 0x33) {  // ; → up
                     int prev = (int)field - 1;
                     if (prev < 0) prev = FIELD_COUNT - 1;
                     field = (SetupField)prev;
                     redraw = true;
-                } else if (hk == 0x16) {  // S → down
+                } else if (hk == 0x37) {  // . → down
                     int next = ((int)field + 1) % FIELD_COUNT;
                     field = (SetupField)next;
                     redraw = true;
-                } else if (hk == 0x04) {  // A → left (vol down on Vol field)
-                    if (field == SetupField::VOLUME && cfg.volume >= 16) {
-                        cfg.volume -= 16;
+                } else if (hk == 0x36) {  // , → left (vol down)
+                    if (field == SetupField::VOLUME) {
+                        int step = cfg.volume > 16 ? 16 : cfg.volume;
+                        cfg.volume = max(0, cfg.volume - step);
+                        audio.applyVolume(cfg.volume);
+                        M5Cardputer.Speaker.tone(440, 40);
                         redraw = true;
                     }
-                } else if (hk == 0x07) {  // D → right (vol up on Vol field)
-                    if (field == SetupField::VOLUME && cfg.volume <= 239) {
-                        cfg.volume += 16;
+                } else if (hk == 0x38) {  // / → right (vol up)
+                    if (field == SetupField::VOLUME) {
+                        int step = cfg.volume < 239 ? 16 : (255 - cfg.volume);
+                        cfg.volume = min(255, cfg.volume + step);
+                        audio.applyVolume(cfg.volume);
+                        M5Cardputer.Speaker.tone(880, 40);
                         redraw = true;
                     }
                 }
@@ -332,8 +337,6 @@ static bool runSetupPage(WifiConfig& cfg) {
             } else if (field == SetupField::PASSWORD) {
                 int len = strlen(cfg.pass);
                 if (len > 0) cfg.pass[len - 1] = '\0';
-            } else if (field == SetupField::VOLUME) {
-                if (cfg.volume >= 16) cfg.volume -= 16;
             }
             prevWord.clear();
             redraw = true;
@@ -358,14 +361,9 @@ static bool runSetupPage(WifiConfig& cfg) {
             redraw = true;
         }
 
-        // ── Space: toggle volume (when on Vol field) ─
+        // ── Space: add space to SSID ────────────────
         if (spaceNow) {
-            if (field == SetupField::VOLUME) {
-                if (cfg.volume < 85) cfg.volume = 170;
-                else if (cfg.volume < 200) cfg.volume = 255;
-                else cfg.volume = 42;
-                redraw = true;
-            } else if (field == SetupField::SSID) {
+            if (field == SetupField::SSID) {
                 int len = strlen(cfg.ssid);
                 if (len < (int)sizeof(cfg.ssid) - 1) {
                     cfg.ssid[len] = ' ';

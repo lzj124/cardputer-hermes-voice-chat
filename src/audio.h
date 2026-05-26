@@ -141,7 +141,7 @@ public:
 
         M5Cardputer.Mic.end();
         M5Cardputer.Speaker.begin();
-        M5Cardputer.Speaker.setVolume(255);
+        M5Cardputer.Speaker.setVolume(volumeSetting);
 
         Serial.printf("[AUDIO] Recorded %.1fs (%zu samples) [%s]\n",
                       (float)recordedSamples / MIC_SAMPLE_RATE,
@@ -159,14 +159,17 @@ public:
     void speakerStart() {
         if (!M5Cardputer.Speaker.isEnabled()) {
             M5Cardputer.Speaker.begin();
-            M5Cardputer.Speaker.setVolume(255);
+            M5Cardputer.Speaker.setVolume(volumeSetting);
         }
     }
+
+    int volumeSetting = 255;  // current speaker volume (0-255)
 
     // Apply volume from config (0-255)
     void applyVolume(int vol) {
         if (vol < 0) vol = 0;
         if (vol > 255) vol = 255;
+        volumeSetting = vol;
         M5Cardputer.Speaker.setVolume(vol);
         Serial.printf("[AUDIO] Volume set to %d\n", vol);
     }
