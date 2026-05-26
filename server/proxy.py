@@ -310,7 +310,25 @@ def hermes_chat(text):
                 continue
 
             event_type = ev.get("event", "")
-            if event_type == "message.delta":
+
+            if event_type == "approval.request":
+                # Auto-approve tool calls (voice assistant has no UI for confirmation)
+                tool_names = ev.get("tools", [ev.get("tool", "unknown")])
+                tool_list = ", ".join(tool_names) if isinstance(tool_names, list) else str(tool_names)
+                log.info(f"Auto-approving tool(s): {tool_list}")
+                try:
+                    approve_url = f"http://{HERMES_HOST}:{HERMES_PORT}/v1/runs/{run_id}/approval"
+                    requests.post(
+                        approve_url,
+                        json={"choice": "always"},
+                        headers=headers,
+                        timeout=5,
+                    )
+                except Exception as e:
+                    log.error(f"Auto-approve exception: {e}")
+                continue
+
+            elif event_type == "message.delta":
                 delta = ev.get("delta", "")
                 if delta:
                     full_text += delta
@@ -388,7 +406,28 @@ def hermes_chat_stream(text, status_callback=None):
 
             event_type = ev.get("event", "")
 
-            if event_type == "tool.started":
+            if event_type == "approval.request":
+                tool_names = ev.get("tools", [ev.get("tool", "unknown")])
+                tool_list = ", ".join(tool_names) if isinstance(tool_names, list) else str(tool_names)
+                log.info(f"Auto-approving tool(s): {tool_list}")
+                # POST /v1/runs/{run_id}/approval with choice=always
+                try:
+                    approve_url = f"http://{HERMES_HOST}:{HERMES_PORT}/v1/runs/{run_id}/approval"
+                    approve_resp = requests.post(
+                        approve_url,
+                        json={"choice": "always"},
+                        headers=headers,
+                        timeout=5,
+                    )
+                    if approve_resp.status_code == 200:
+                        yield {"type": "status", "text": f"Auto-approve: {tool_list[:18]}"}
+                    else:
+                        log.error(f"Auto-approve failed HTTP {approve_resp.status_code}: {approve_resp.text[:200]}")
+                except Exception as e:
+                    log.error(f"Auto-approve exception: {e}")
+                continue
+
+            elif event_type == "tool.started":
                 tool_name = ev.get("tool", "unknown")
                 preview = ev.get("preview", "")
                 label = preview if preview else tool_name
