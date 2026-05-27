@@ -18,16 +18,22 @@ import requests
 import websocket
 
 # ── Configuration ──────────────────────────────────────────────
-VOLCENGINE_APP_ID       = os.getenv("VOLC_APPID", "7443062928")
-VOLCENGINE_ACCESS_TOKEN = os.getenv("VOLC_TOKEN", "VOLC_TOKEN_REDACTED")
-VOLCENGINE_SECRET_KEY   = os.getenv("VOLC_SECRET", "VOLC_SECRET_REDACTED")
+VOLCENGINE_APP_ID       = os.getenv("VOLC_APPID", "")
+VOLCENGINE_ACCESS_TOKEN = os.getenv("VOLC_TOKEN", "")
+VOLCENGINE_SECRET_KEY   = os.getenv("VOLC_SECRET", "")
+
+if not VOLCENGINE_APP_ID or not VOLCENGINE_ACCESS_TOKEN:
+    raise RuntimeError(
+        "Missing Volcengine credentials. Set VOLC_APPID, VOLC_TOKEN, VOLC_SECRET.\n"
+        "Copy .env.example to .env and fill in your keys."
+    )
 
 # ── LLM Backend ──────────────────────────────────────────────
 LLM_BACKEND = os.getenv("LLM_BACKEND", "hermes")  # "hermes" or "openclaw"
 
-OPENCLAW_HOST  = os.getenv("OPENCLAW_HOST", "192.168.123.234")
+OPENCLAW_HOST  = os.getenv("OPENCLAW_HOST", "")
 OPENCLAW_PORT  = os.getenv("OPENCLAW_PORT", "18789")
-OPENCLAW_TOKEN = os.getenv("OPENCLAW_TOKEN", "OPENCLAW_TOKEN_REDACTED")
+OPENCLAW_TOKEN = os.getenv("OPENCLAW_TOKEN", "")
 
 # TTS settings — 豆包语音合成 2.0 (V3 HTTP Chunked)
 TTS_URL         = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"

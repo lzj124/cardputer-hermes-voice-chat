@@ -6,10 +6,17 @@ Tests Volcengine ASR (WebSocket) and TTS 2.0 (V3 HTTP Chunked) independently.
 
 import json, uuid, struct, base64, sys, os, wave, io
 
-# Add parent for imports
-VOLC_APPID = "7443062928"
-VOLC_TOKEN = "VOLC_TOKEN_REDACTED"
-VOLC_SECRET = "VOLC_SECRET_REDACTED"
+# Volcengine credentials from environment
+import os as _os
+VOLC_APPID  = _os.getenv("VOLC_APPID", "")
+VOLC_TOKEN  = _os.getenv("VOLC_TOKEN", "")
+VOLC_SECRET = _os.getenv("VOLC_SECRET", "")
+
+if not VOLC_APPID or not VOLC_TOKEN:
+    raise RuntimeError(
+        "Missing Volcengine credentials. Set VOLC_APPID, VOLC_TOKEN, VOLC_SECRET.\n"
+        "Copy .env.example to .env and fill in your keys."
+    )
 
 # ── Test TTS 2.0 ─────────────────────────────────────────────
 

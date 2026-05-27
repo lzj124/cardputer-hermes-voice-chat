@@ -9,6 +9,14 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVER_DIR="$SCRIPT_DIR/server"
 
+# 加载 .env 环境变量
+if [ -f "$SCRIPT_DIR/.env" ]; then
+    set -a  # 自动 export 所有变量
+    source "$SCRIPT_DIR/.env"
+    set +a
+    echo -e "  ${GREEN}✓ 已加载 .env${NC}"
+fi
+
 # 颜色
 RED='\033[0;31m'
 GREEN='\033[0;32m'
