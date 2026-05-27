@@ -1,137 +1,253 @@
 # ClawVoice
 
-Voice-first AI assistant on M5Cardputer (ESP32-S3). Press button → speak → hear response. The screen shows only a white waveform line.
+Voice-first AI assistant on M5Cardputer (ESP32-S3). Press Fn → speak → hear response.
+
+Powered by [Hermes Agent](https://hermes-agent.nousresearch.com) for LLM reasoning and Volcengine (火山引擎) for speech recognition/synthesis.
 
 ## Architecture
 
 ```
-Cardputer                    Mac Mini (proxy.py)              Cloud
-┌──────────┐   WAV audio    ┌──────────────┐   WebSocket    ┌──────────────┐
-│  Mic     │ ──────────────→│  /voice      │ ─────────────→ │ Volcengine   │
-│  Speaker │ ←──────────────│  ASR → Chat  │                │ ASR (语音识别)│
-│  Display │   PCM audio    │  → TTS       │ ←───────────── │ OpenClaw GW  │
-│  Button  │                │  /text       │   HTTP/SSE     │ Volcengine   │
-└──────────┘                └──────────────┘                │ TTS (语音合成)│
-                                                            └──────────────┘
+ ┌─────────────────┐          ┌──────────────────────┐          ┌─────────────────┐
+ │  Cardputer      │   WAV    │  Mac / Linux         │   HTTP   │  Hermes Agent   │
+ │  (ESP32-S3)     │ ◄──────► │  proxy.py :8900      │ ◄──────► │  :8642 (api)    │
+ │                 │   PCM    │                      │          │                 │
+ │  Mic / Speaker  │          │  ASR → Chat → TTS    │  WebSocket         │  Volcengine      │
+ │  Display / Keyb │          │                      │ ◄──────► │  ASR + TTS       │
+ └─────────────────┘          └──────────────────────┘          └─────────────────┘
 ```
 
-- **Cardputer**: Records audio, plays PCM, shows waveform, button input only
-- **Mac Mini proxy**: Handles the heavy lifting — ASR (WebSocket binary), OpenClaw chat (SSE streaming), TTS (HTTP)
-- **Cloud**: Volcengine ASR/TTS + OpenClaw gateway
+- **Cardputer** — Records audio, plays PCM, displays status. No heavy compute.
+- **proxy.py** (Mac/Linux server) — Handles ASR (Volcengine WebSocket), LLM chat (Hermes SSE streaming), TTS (Volcengine HTTP).
+- **Hermes Agent** — Local LLM agent with tool calling capability (auto-approved by proxy).
+- **Volcengine** — Cloud speech recognition (大模型流式语音识别) and synthesis (豆包语音合成 2.0).
+
+Two transport modes:
+- **WiFi** — Cardputer talks directly to proxy over HTTP (requires 2.4GHz network).
+- **USB Serial** — Cardputer ↔ usb_bridge.py ↔ proxy. Lower latency, no WiFi needed.
+
+## Hardware Requirements
+
+| Item | Details |
+|------|---------|
+| M5Stack Cardputer | ESP32-S3, recommended version with SD card slot (Cardputer ADV) |
+| MicroSD card | For WiFi config persistence and extended recording (>4s) |
+| Host computer | Mac or Linux on the same LAN (for proxy.py) |
+| USB-C cable | For flashing firmware and USB transport mode |
 
 ## Quick Start
 
-### 1. Mac Mini — Start proxy server
+### Prerequisites
+
+```bash
+# 1. Python 3.9+ with venv
+python3 --version
+
+# 2. PlatformIO CLI (for ESP32 firmware)
+# Install via Homebrew: brew install platformio
+# Or: pip install platformio
+pio --version
+
+# 3. Hermes Agent (for LLM)
+# Follow: https://hermes-agent.nousresearch.com/docs
+# API server must be running on port 8642
+hermes --version
+```
+
+### 1. Server Setup (Mac/Linux)
 
 ```bash
 cd ~/Desktop/ClawVoice/server
+
+# Install Python dependencies
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 
-# Set OpenClaw token (required for chat)
-export OPENCLAW_TOKEN="your-openclaw-token"
+# Set Volcengine credentials (required for speech)
+export VOLC_APPID="your-app-id"
+export VOLC_TOKEN="your-access-token"
+export VOLC_SECRET="your-secret-key"
 
-# Start server
+# Start proxy server
 python proxy.py
 # → Listening on http://0.0.0.0:8900
 ```
 
-Test: `curl http://192.168.123.234:8900/health`
+Test: `curl http://localhost:8900/health` → `{"status": "ok", "llm_backend": "hermes"}`
 
-### 2. Cardputer — Build & flash
+### 2. Cardputer Firmware
 
 ```bash
 cd ~/Desktop/ClawVoice
 
-# Set WiFi + proxy config
-export WIFI_SSID="WIFI_SSID_REDACTED" WIFI_PASS="WIFI_PASS_REDACTED" \
-       PROXY_HOST="192.168.123.234" PROXY_PORT="8900" \
-       OPENCLAW_TOKEN="your-openclaw-token"
+# Build & flash (first build downloads ESP32 toolchain ~440MB)
+pio run -t upload
 
-# Build (first time needs proxy for toolchain download)
-# export HTTP_PROXY=http://127.0.0.1:7897 HTTPS_PROXY=http://127.0.0.1:7897
-~/Library/Python/3.9/bin/pio run -t upload
+# Monitor serial output
+pio device monitor --baud 115200
 ```
 
-### 3. Use
-
-1. Cardputer boots → shows breathing wave (sleep mode)
-2. Press **Fn key** → beep → awake
-3. **Hold Fn** → recording (waveform shows mic input)
-4. **Release Fn** → sends audio to proxy → processing dots
-5. Response plays through speaker → waveform animates
-6. Returns to sleep
-
-## State Machine
-
+**First build behind firewall?** Set proxy:
+```bash
+export HTTP_PROXY=http://127.0.0.1:7897 HTTPS_PROXY=http://127.0.0.1:7897
+pio run -t upload
 ```
-SLEEP ──[Fn press]──→ AWAKE ──[hold Fn]──→ RECORDING
-  ↑                                              │
-  │                          [release / timeout]  │
-  │                                              ↓
-  └── SPEAKING ←── PROCESSING ←──[send to proxy]─┘
-        │
-        [playback done / Fn press to interrupt]
+
+### 3. USB Bridge (Recommended)
+
+USB bridge provides lower latency and doesn't require WiFi on the Cardputer:
+
+```bash
+cd ~/Desktop/ClawVoice
+
+# Auto-detect Cardputer serial port and start bridge
+python run_bridge.py
+# → Found Cardputer at /dev/tty.usbmodemXXX
+# → Bridge ready
 ```
+
+### 4. One-Click Start
+
+Or use `start.sh` to launch both proxy and bridge:
+
+```bash
+cd ~/Desktop/ClawVoice
+./start.sh
+```
+
+## Usage
+
+### Basic Operation
+
+| Action | What happens |
+|--------|-------------|
+| **Hold Fn** | Start recording (speak into mic) |
+| **Release Fn** | Send audio to server → ASR → LLM → TTS → playback |
+| **Hold Fn during playback** | Interrupt / stop speaking |
+| **Tab** (in idle) | Open WiFi settings page |
+
+### State Display
+
+| Screen | Meaning |
+|--------|---------|
+| `Ready` | Idle, waiting for input |
+| `Recording...` | Hold Fn, speaking into mic |
+| `Thinking...` | Waiting for LLM response |
+| `Tool: xxx` | LLM is using a tool |
+| `Generating...` | LLM generating text |
+| `Speaking...` | Playing TTS audio |
+
+### WiFi Setup (On-Device)
+
+1. **Startup mode**: Hold Fn while powering on → enters WiFi setup
+2. **Runtime mode**: Press Tab in idle state → enters WiFi setup
+
+In setup page:
+- **Fn+;** (semicolon) / **Fn+.** (period) — Navigate fields
+- **Tab** — Next field
+- **Enter** — Confirm / Save
+- **Del** — Backspace
+
+Config saved to SD card at `/wifi.cfg`:
+```
+MyWiFi
+password123
+255
+```
+(SSID, password, volume 0-255, one per line)
 
 ## Configuration
 
-### Cardputer (build flags in platformio.ini)
+### Proxy Server (Environment Variables)
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `WIFI_SSID` | WIFI_SSID_REDACTED | WiFi network |
-| `WIFI_PASS` | — | WiFi password |
-| `PROXY_HOST` | 192.168.123.234 | Mac Mini LAN IP |
-| `PROXY_PORT` | 8900 | Proxy server port |
-| `OPENCLAW_TOKEN` | — | OpenClaw gateway token |
-
-### Proxy Server (env vars)
-
-| Var | Default | Description |
-|-----|---------|-------------|
-| `VOLC_APPID` | 7443062928 | Volcengine App ID |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VOLC_APPID` | — | Volcengine App ID |
 | `VOLC_TOKEN` | — | Volcengine Access Token |
 | `VOLC_SECRET` | — | Volcengine Secret Key |
-| `OPENCLAW_HOST` | 192.168.123.234 | OpenClaw gateway host |
-| `OPENCLAW_PORT` | 18789 | OpenClaw gateway port |
-| `OPENCLAW_TOKEN` | — | OpenClaw gateway token |
-| `TTS_VOICE` | BV001_streaming | TTS voice type |
-| `PROXY_PORT` | 8900 | Proxy listen port |
+| `LLM_BACKEND` | `hermes` | LLM backend: `hermes` or `openclaw` |
+| `HERMES_HOST` | `127.0.0.1` | Hermes API server host |
+| `HERMES_PORT` | `8642` | Hermes API server port |
+| `TTS_VOICE` | `zh_female_vv_uranus_bigtts` | TTS voice name |
+| `TTS_RESOURCE_ID` | `seed-tts-2.0` | TTS resource ID |
+| `ASR_RESOURCE_ID` | `volc.seedasr.sauc.duration` | ASR resource ID |
+| `PROXY_HOST` | `0.0.0.0` | Proxy listen address |
+| `PROXY_PORT` | `8900` | Proxy listen port |
 
-## API Endpoints (proxy.py)
+### Cardputer (Compile-Time)
+
+Default WiFi credentials are set in `platformio.ini` build flags. Override via environment:
+
+```bash
+export WIFI_SSID="MyWiFi" WIFI_PASS="mypassword"
+pio run -t upload
+```
+
+Once the device boots, WiFi config is loaded from SD card (`/wifi.cfg`), which can be changed via the on-device setup page.
+
+**Proxy address** defaults to `192.168.123.234:8900`. Change in `src/config.h` if your Mac has a different LAN IP:
+
+```cpp
+#define PROXY_HOST "192.168.x.x"
+#define PROXY_PORT "8900"
+```
+
+## API Endpoints
 
 ### `POST /voice`
-- **In**: Raw PCM audio (16kHz 16-bit mono)
-- **Out**: Raw PCM audio (8kHz 16-bit mono)
-- **Pipeline**: ASR → OpenClaw Chat → TTS
+Speech-to-speech pipeline.
+- **In**: WAV or raw PCM audio (16kHz 16-bit mono)
+- **Out**: Streaming — STATUS lines followed by `RECV:<len>\n` + PCM audio (8kHz 16-bit mono)
+- **Pipeline**: ASR → Hermes Chat → TTS
 
 ### `POST /text`
-- **In**: `{"text": "..."}`
-- **Out**: Raw PCM audio (8kHz 16-bit mono)
-- **Pipeline**: OpenClaw Chat → TTS
+Text-to-speech.
+- **In**: `{"text": "你好世界"}`
+- **Out**: PCM audio (8kHz 16-bit mono)
 
 ### `GET /health`
-- Returns JSON with server status and config
+```json
+{"status": "ok", "llm_backend": "hermes", "hermes": "127.0.0.1:8642", ...}
+```
 
-## File Structure
+## Project Structure
 
 ```
 ClawVoice/
-├── platformio.ini          # PIO build config
+├── platformio.ini            # PIO build config
+├── start.sh                  # One-click launcher (proxy + bridge)
+├── run_bridge.py             # USB bridge wrapper
 ├── src/
-│   ├── main.cpp            # State machine + Arduino setup/loop
-│   ├── config.h            # Constants, WiFi, timing
-│   ├── audio.h             # Mic recording, speaker playback, waveform display
-│   └── network.h           # HTTP client (POST /voice, POST /text)
+│   ├── main.cpp              # State machine + setup
+│   ├── config.h              # Constants, timing, pinouts
+│   ├── audio.h               # Mic, speaker, waveform display
+│   ├── network.h             # HTTP client (WiFi + USB transport)
+│   └── settings.h            # SD config persistence + setup page UI
 ├── server/
-│   ├── proxy.py            # Mac Mini proxy: ASR + TTS + OpenClaw
-│   └── requirements.txt    # Python deps (flask, requests, websocket-client)
-└── README.md
+│   ├── proxy.py              # ASR + LLM + TTS proxy server
+│   ├── usb_bridge.py         # Serial ↔ HTTP bridge
+│   ├── pre_upload.py         # Auto-kill usb_bridge before flash
+│   ├── requirements.txt      # Python deps
+│   └── test_*.py             # Quick smoke tests
+├── test_burn/                # Minimal test firmware
+└── test_arrows/              # Key mapping test
 ```
 
 ## Troubleshooting
 
-- **"WIFI FAIL"**: Check SSID/password, ensure 2.4GHz network
-- **No response**: Verify proxy.py is running and `PROXY_HOST` is correct
-- **ASR empty**: Speak louder/closer, check Volcengine credentials
-- **Build fails**: First build needs internet (toolchain ~440MB). Set `HTTP_PROXY` if behind firewall
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| **"WIFI FAIL" on screen** | Wrong SSID/password, or 5GHz network | Check `/wifi.cfg` on SD card. 2.4GHz only. |
+| **"No WiFi" / "Server error"** | proxy.py not running or wrong IP | `curl http://MAC_IP:8900/health` from Cardputer's network |
+| **"USB error"** | usb_bridge.py not running or serial port conflict | Check `python run_bridge.py` output. Kill any process holding the serial port. |
+| **"No speech detected"** | Mic too quiet or Volcengine auth failure | Check proxy.py logs. Verify VOLC_* env vars. |
+| **ASR timeout / no response** | Volcengine network issue | Test: `curl http://localhost:8900/health` to verify ASR resource ID. |
+| **"NO RAM!" at boot** | DRAM allocation failed | Reboot Cardputer. Ensure Serial buffer is not consuming too much RAM. |
+| **Flash fails** | usb_bridge holding serial port | `pkill -f usb_bridge` before flashing. `pre_upload.py` does this automatically. |
+| **Build fails (toolchain)** | First build needs ~440MB download | Ensure internet access. Set HTTP_PROXY if behind firewall. |
+| **Tool calls hang forever** | Hermes requires approval for tools | **Fixed in `feat/auto-approve-tools`** — proxy auto-approves all tool calls. |
+| **SD card not detected** | Wrong pins or no SD inserted | Only Cardputer ADV has SD slot. Check pins in `config.h`. |
+
+## Hermes Tool Call Behavior
+
+When Hermes decides to use a tool (e.g., web search, calendar), the API sends an `approval.request` event that normally requires manual confirmation. ClawVoice proxy auto-approves all tool calls with `choice: "always"` — the LLM can use any available tool without interruption. Tool progress is shown on the Cardputer screen (e.g., `Tool: web_search`).
